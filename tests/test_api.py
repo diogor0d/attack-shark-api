@@ -1,0 +1,139 @@
+from fastapi.testclient import TestClient
+
+from attack_shark_x68he.api import create_app
+from attack_shark_x68he.errors import DeviceBusyError
+
+
+class Device:
+    id = "x68he"
+    name = "Test X68HE"
+    vendor_id = 3151
+    product_id = 502
+    revision = "2270"
+    led_map = [{"index": i, "name": f"K{i}"} for i in range(2)]
+    capabilities = {"streaming_supported": False, "presets": True}
+    max_frame_rate = 0
+
+    def __init__(self):
+        self.calls = []
+        self.restored = None
+
+    def set_preset(self, value):
+        self.calls.append(("preset", value))
+        return None
+
+    def set_frame(self, value):
+        self.calls.append(("frame", value))
+        return None
+
+    def capture_state(self):
+        return {"mode": "saved"}
+
+    def restore_state(self, value):
+        self.restored = value
+
+
+class Manager:
+    last_error = None
+
+    def __init__(self):
+        self.device = Device()
+
+    def list_devices(self):
+        return [self.device]
+
+    def get_device(self, device_id):
+        if device_id != self.device.id:
+            raise KeyError(device_id)
+        return self.device
+
+    def close(self):
+        pass
+
+
+class BusyManager:
+    last_error = "HID interface is busy"
+    busy = True
+
+    def list_devices(self):
+        return []
+
+    def get_device(self, _device_id):
+        raise DeviceBusyError(self.last_error)
+
+    def close(self):
+        pass
+
+
+def test_health_and_device_metadata():
+    client = TestClient(create_app(Manager()))
+    assert client.get("/health").json()["status"] == "ok"
+    response = client.get("/v1/devices/x68he")
+    assert response.status_code == 200
+    assert response.json()["led_count"] == 2
+
+
+def test_busy_device_is_not_reported_as_missing():
+    client = TestClient(create_app(BusyManager()))
+    response = client.get("/v1/devices/x68he")
+    assert response.status_code == 409
+
+
+def test_unproven_frame_is_501_and_does_not_write():
+    manager = Manager()
+    client = TestClient(create_app(manager))
+    response = client.put("/v1/devices/x68he/lighting/frame", content=b"\0" * 6)
+    assert response.status_code == 501
+    assert manager.device.calls == []
+
+
+def test_invalid_preset_is_rejected_without_write():
+    manager = Manager()
+    client = TestClient(create_app(manager))
+    response = client.put(
+        "/v1/devices/x68he/lighting/preset", json={"mode": "solid", "color": [999, 0, 0]}
+    )
+    assert response.status_code == 422
+    assert manager.device.calls == []
+
+
+def test_unproven_websocket_is_closed_clearly():
+    client = TestClient(create_app(Manager()))
+    with client.websocket_connect("/v1/devices/x68he/lighting/stream") as socket:
+        message = socket.receive()
+        assert message["type"] == "websocket.close"
+        assert message["code"] == 1011
+
+
+def test_supported_stream_writes_frame_and_restores_state():
+    manager = Manager()
+    manager.device.capabilities = {"streaming_supported": True, "presets": True}
+    manager.device.max_frame_rate = 20
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/v1/devices/x68he/lighting/stream") as socket:
+        assert socket.receive_json()["type"] == "metadata"
+        socket.send_bytes(b"\x01\x02\x03" * 2)
+        socket.send_json({"type": "release"})
+        assert socket.receive_json()["type"] == "released"
+    assert manager.device.calls == [("frame", b"\x01\x02\x03" * 2)]
+    assert manager.device.restored == {"mode": "saved"}
+
+
+def test_supported_stream_uses_device_claim_hooks_when_available():
+    manager = Manager()
+    manager.device.capabilities = {"streaming_supported": True, "presets": True}
+    manager.device.max_frame_rate = 20
+    manager.device.claimed = False
+    manager.device.released = False
+    manager.device.acquire_stream = lambda: (
+        setattr(manager.device, "claimed", True) or {"mode": "saved"}
+    )
+    manager.device.release_stream = lambda: setattr(manager.device, "released", True)
+
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/v1/devices/x68he/lighting/stream") as socket:
+        assert socket.receive_json()["type"] == "metadata"
+        socket.send_json({"type": "release"})
+
+    assert manager.device.claimed is True
+    assert manager.device.released is True

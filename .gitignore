@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# USB captures can contain unrelated device traffic and must remain local.
+captures/
+.captures/
+*.pcap
+*.pcapng
+
