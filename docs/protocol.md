@@ -47,9 +47,9 @@ The only public device write is `SET_LEDPARAM 0x07`, using `Bit8`:
 [0x07, mode, speed, brightness, (option << 4) | flags, R, G, B, checksum]
 ```
 
-The package also has a capture-derived encoder for volatile whole-keyboard opcode `0x0E`,
-but it is not exposed through the public API. Sending arbitrary raw reports is not part of
-the package interface.
+The package exposes the capture-derived whole-keyboard opcode `0x0E` only through the
+bounded global-colour WebSocket. Sending arbitrary raw reports is not part of the package
+interface, and the per-key endpoints remain unsupported.
 
 ### Sanitized vendor-driver capture
 

@@ -73,6 +73,21 @@ def test_health_and_device_metadata():
     assert response.json()["led_count"] == 2
 
 
+def test_global_stream_capabilities_advertise_20_fps_and_no_per_key_support():
+    manager = Manager()
+    manager.device.capabilities = {
+        "streaming_supported": False,
+        "global_color_streaming": True,
+        "global_color_max_frame_rate": 20,
+        "per_key_streaming": False,
+    }
+    manager.device.max_frame_rate = 20
+    metadata = TestClient(create_app(manager)).get("/v1/devices/x68he").json()
+    assert metadata["max_frame_rate"] == 20
+    assert metadata["capabilities"]["global_color_max_frame_rate"] == 20
+    assert metadata["capabilities"]["per_key_streaming"] is False
+
+
 def test_busy_device_is_not_reported_as_missing():
     client = TestClient(create_app(BusyManager()))
     response = client.get("/v1/devices/x68he")
@@ -137,3 +152,42 @@ def test_supported_stream_uses_device_claim_hooks_when_available():
 
     assert manager.device.claimed is True
     assert manager.device.released is True
+
+
+def test_global_stream_accepts_rgb_and_restores_state():
+    manager = Manager()
+    manager.device.capabilities = {
+        "streaming_supported": False,
+        "global_color_streaming": True,
+        "presets": True,
+    }
+    manager.device.acquire_global_stream = lambda: manager.device.capture_state()
+    manager.device.set_global_color = lambda rgb: manager.device.calls.append(("global", rgb))
+    manager.device.release_global_stream = lambda: (
+        manager.device.calls.append(("release",)),
+        manager.device.restore_state({"mode": "saved"}),
+    )[-1]
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/v1/devices/x68he/lighting/global-stream") as socket:
+        assert socket.receive_json() == {"type": "metadata", "max_frame_rate": 20, "mode": 21}
+        socket.send_json({"color": [1, 2, 3]})
+        socket.send_json({"color": [4, 5, 6]})
+        socket.send_json({"type": "release"})
+        assert socket.receive_json() == {"type": "released"}
+    assert any(call[0] == "global" for call in manager.device.calls)
+    assert ("release",) in manager.device.calls
+
+
+def test_global_stream_rejects_non_triplets_without_writing():
+    manager = Manager()
+    manager.device.capabilities = {"global_color_streaming": True}
+    manager.device.acquire_global_stream = lambda: manager.device.capture_state()
+    manager.device.set_global_color = lambda rgb: manager.device.calls.append(("global", rgb))
+    manager.device.release_stream = lambda: None
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/v1/devices/x68he/lighting/global-stream") as socket:
+        socket.receive_json()
+        socket.send_json({"color": [1, 2]})
+        assert socket.receive_json()["error"]
+        socket.send_json({"type": "release"})
+    assert not any(call[0] == "global" for call in manager.device.calls)

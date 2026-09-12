@@ -9,6 +9,7 @@ from .protocol import (
     GET_REVISION,
     encode_get,
     encode_light_preset,
+    encode_screen_color,
     parse_identify,
     parse_light_state,
     parse_revision,
@@ -67,6 +68,20 @@ class DeviceController:
     def set_preset(self, state: LightingState) -> None:
         self._require_identity()
         self.transport.write(encode_light_preset(state, identified=True))
+
+    def acquire_global_stream(self) -> LightingState:
+        """Claim the device, save its state, and select captured mode 21."""
+        previous = self.acquire()
+        try:
+            self.set_preset(LightingState(21, 4, 4, 0, 0, previous.rgb))
+            return previous
+        except Exception:
+            self.release()
+            raise
+
+    def set_global_color(self, rgb: tuple[int, int, int]) -> None:
+        self._require_identity()
+        self.transport.write(encode_screen_color(rgb, identified=True))
 
     def acquire(self) -> LightingState:
         self._require_identity()

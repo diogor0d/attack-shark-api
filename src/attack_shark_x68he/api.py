@@ -132,6 +132,24 @@ def _streaming_supported(device: Any) -> bool:
     return bool(_capabilities(device).get("streaming_supported", False))
 
 
+def _global_color(message: Any) -> tuple[int, int, int]:
+    if isinstance(message, (bytes, bytearray)):
+        values = list(message)
+    else:
+        if isinstance(message, list):
+            values = message
+        else:
+            value = message.get("color", message.get("rgb")) if isinstance(message, dict) else None
+            values = value if isinstance(value, list) else None
+    if (
+        not isinstance(values, list)
+        or len(values) != 3
+        or any(not isinstance(value, int) or not 0 <= value <= 255 for value in values)
+    ):
+        raise ValueError("global stream frames must contain exactly one RGB triplet")
+    return (values[0], values[1], values[2])
+
+
 def create_app(manager: DeviceManager) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -312,5 +330,97 @@ def create_app(manager: DeviceManager) -> FastAPI:
             if explicit_release:
                 with suppress(Exception):
                     await websocket.send_json({"type": "released"})
+
+    @app.websocket("/v1/devices/{device_id}/lighting/global-stream")
+    async def global_stream(websocket: WebSocket, device_id: str) -> None:
+        try:
+            device = manager.get_device(device_id)
+            if not _capabilities(device).get("global_color_streaming", False):
+                raise NotImplementedError("global colour streaming is unsupported")
+            previous = device.acquire_global_stream()
+        except HardwareDeviceBusyError:
+            await websocket.accept()
+            await websocket.close(code=4409, reason="device is busy")
+            return
+        except (KeyError, LookupError, AttributeError):
+            await websocket.accept()
+            await websocket.close(code=4404, reason="unknown or disconnected device")
+            return
+        except NotImplementedError:
+            await websocket.accept()
+            await websocket.close(code=1011, reason="global colour streaming is unsupported")
+            return
+        except (X68Error, OSError) as exc:
+            await websocket.accept()
+            await websocket.close(code=1011, reason=str(exc))
+            return
+
+        queue = LatestFrameQueue(1)
+        writer_error: Exception | None = None
+
+        async def write_colors() -> None:
+            nonlocal writer_error
+            while True:
+                raw_rgb = await queue.get()
+                rgb = tuple(raw_rgb)
+                try:
+                    await asyncio.to_thread(device.set_global_color, rgb)
+                    await asyncio.sleep(1 / 20)
+                except Exception as exc:
+                    writer_error = exc
+                    raise
+                finally:
+                    queue.task_done()
+
+        writer = asyncio.create_task(write_colors())
+        explicit_release = False
+        try:
+            await websocket.accept()
+            await websocket.send_json({"type": "metadata", "max_frame_rate": 20, "mode": 21})
+            while True:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    break
+                try:
+                    if message.get("bytes") is not None:
+                        rgb = _global_color(bytes(message["bytes"]))
+                    elif message.get("text") is not None:
+                        decoded = json.loads(message["text"])
+                        if isinstance(decoded, dict) and decoded.get("type") == "release":
+                            explicit_release = True
+                            break
+                        rgb = _global_color(decoded)
+                    else:
+                        continue
+                except (ValueError, json.JSONDecodeError) as exc:
+                    await websocket.send_json({"error": str(exc)})
+                    continue
+                queue.put_nowait(bytes(rgb))
+        except WebSocketDisconnect:
+            pass
+        finally:
+            with suppress(TimeoutError):
+                await asyncio.wait_for(queue.join(), timeout=1)
+            writer.cancel()
+            with suppress(asyncio.CancelledError):
+                await writer
+            with suppress(Exception):
+                release_stream = getattr(device, "release_global_stream", None)
+                if not callable(release_stream):
+                    release_stream = getattr(device, "release_stream", None)
+                if callable(release_stream):
+                    release_stream()
+                else:
+                    device.restore_state(previous)
+            if writer_error is not None:
+                invalidate = getattr(manager, "invalidate", None)
+                if callable(invalidate):
+                    invalidate(device_id)
+            if explicit_release:
+                with suppress(Exception):
+                    await websocket.send_json({"type": "released"})
+            if writer_error is not None:
+                with suppress(Exception):
+                    await websocket.send_json({"error": str(writer_error)})
 
     return app

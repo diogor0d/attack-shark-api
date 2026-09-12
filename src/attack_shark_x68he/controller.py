@@ -86,10 +86,13 @@ class ManagedX68HE:
     product_id = PID
     led_map = tuple(asdict(led) for led in LED_MAP)
     leds = led_map
-    max_frame_rate = 0
+    max_frame_rate = 20
     capabilities = {
         "presets": True,
         "streaming_supported": False,
+        "global_color_streaming": True,
+        "global_color_max_frame_rate": 20,
+        "per_key_streaming": False,
         "mapping_verified": MAPPING_VERIFIED,
         "preset_modes": tuple(PRESET_MODES),
     }
@@ -119,6 +122,15 @@ class ManagedX68HE:
 
     def set_frame(self, _frame: bytes) -> None:
         raise NotImplementedError("volatile streaming is not proven for this device")
+
+    def acquire_global_stream(self) -> LightingState:
+        return self._controller.acquire_global_stream()
+
+    def set_global_color(self, rgb: tuple[int, int, int]) -> None:
+        self._controller.set_global_color(rgb)
+
+    def release_global_stream(self) -> None:
+        self._controller.release()
 
     def close(self) -> None:
         self._controller.close()
@@ -175,6 +187,12 @@ class X68Manager:
             if self._device is not None:
                 self._device.close()
                 self._device = None
+
+    def invalidate(self, device_id: str) -> None:
+        """Drop a failed cached device so the next request performs discovery again."""
+        if device_id != DEVICE_ID:
+            return
+        self.close()
 
 
 def create_manager() -> X68Manager:

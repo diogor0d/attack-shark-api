@@ -12,8 +12,9 @@ flash.
 - Built-in lighting changes use the documented `SET_LEDPARAM` command only.
 - Firmware, reset, calibration, flash erase, keymap, macro, Hall-effect settings, and
   flash-backed per-key uploads are outside the command allowlist.
-- Live per-key frames remain disabled. Captures prove mode 21 provides volatile
-  whole-keyboard RGB, while custom per-key patterns use flash-backed opcode `0x0C`.
+- Live per-key frames remain disabled. The separate global-colour WebSocket uses only the
+  capture-proven volatile mode 21 / opcode `0x0E` path, capped at 20 FPS. Custom per-key
+  patterns use flash-backed opcode `0x0C` and remain blocked.
 - The Attack Shark driver, Sharkfin, OpenRGB, and this service must not control the HID
   interface at the same time.
 
@@ -68,5 +69,12 @@ checkpoint:
 - mode 22 emits opcode `0x0D` at about 49 FPS, but the captured payload remained zero during
   a system-output test tone, so its signal fields and audio source are not yet established.
 
-The public frame and WebSocket endpoints therefore continue to return an unsupported error.
-OpenRGB work remains gated because arbitrary volatile per-key frames have not been found.
+`/v1/devices/x68he/lighting/global-stream` accepts exactly one RGB triplet per binary or
+JSON frame, retains only the newest queued frame, and restores the exact captured lighting
+state when the connection closes. Device metadata advertises
+`global_color_streaming=true`, `per_key_streaming=false`, and a 20 FPS ceiling. Existing
+per-key frame and WebSocket endpoints continue to return an unsupported error. OpenRGB
+per-key work remains gated because arbitrary volatile per-key frames have not been found.
+
+Only one API process may run at a time; the Windows service path holds an OS-wide named
+mutex. Only one stream may own the HID device, independently of that process guard.

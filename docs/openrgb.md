@@ -6,8 +6,8 @@ hardware support by itself.
 
 The current X68HE capture checkpoint does not satisfy the prerequisite for native support:
 mode 21 is a volatile whole-keyboard colour report, while arbitrary per-key Light Edit
-updates use flash-backed `0x0C` pages. The Python API therefore remains preset-only and no
-OpenRGB controller is added yet.
+updates use flash-backed `0x0C` pages. The Python API exposes only the safe global-colour
+stream and built-in presets; no per-key OpenRGB controller is added.
 
 After a volatile frame protocol passes hardware validation:
 

@@ -3,6 +3,7 @@ import pytest
 from attack_shark_x68he.device import DeviceController
 from attack_shark_x68he.errors import DeviceBusyError, UnsupportedDeviceError
 from attack_shark_x68he.models import LightingState
+from attack_shark_x68he.protocol import SET_SCREEN_COLOR
 
 
 class FakeTransport:
@@ -32,6 +33,18 @@ def test_controller_probe_state_and_preset():
     assert identity.internal_id == 2270 and d.current_state().mode == 21
     d.set_preset(LightingState(21, rgb=(10, 20, 30)))
     assert t.writes[0][0] == 0x8F and t.writes[-1][0] == 7
+
+
+def test_global_stream_selects_mode_21_and_emits_only_volatile_color():
+    t = FakeTransport()
+    d = DeviceController(t, settle_seconds=0)
+    d.probe()
+    previous = d.acquire_global_stream()
+    d.set_global_color((10, 20, 30))
+    d.release()
+    assert previous.mode == 21
+    assert [report[0] for report in t.writes] == [0x8F, 0x80, 0x87, 0x07, SET_SCREEN_COLOR, 0x07]
+    assert all(report[0] != 0x0C for report in t.writes)
 
 
 def test_controller_requires_probe():

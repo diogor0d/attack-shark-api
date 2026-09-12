@@ -8,6 +8,8 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from .controller import PRESET_MODES, create_manager
+from .errors import DeviceBusyError
+from .ownership import named_mutex
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,8 +48,15 @@ def main(argv: list[str] | None = None) -> int:
 
         from .api import create_app
 
-        uvicorn.run(create_app(manager), host="127.0.0.1", port=args.port)
-        return 0
+        try:
+            with named_mutex("Global\\AttackSharkX68HE-API"):
+                uvicorn.run(create_app(manager), host="127.0.0.1", port=args.port)
+            return 0
+        except DeviceBusyError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 1
+        finally:
+            manager.close()
 
     devices = manager.list_devices()
     if not devices:
