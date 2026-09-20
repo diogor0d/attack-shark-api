@@ -7,13 +7,17 @@ from attack_shark_x68he.protocol import (
     GET_REVISION,
     checksum7,
     checksum8,
+    encode_audio_spectrum,
     encode_get,
     encode_light_preset,
     encode_screen_color,
+    encode_userpic_pages,
     parse_identify,
     parse_revision,
+    validate_audio_report,
     validate_internal_id,
     validate_reply,
+    validate_userpic_report,
 )
 
 
@@ -73,6 +77,85 @@ def test_screen_color_requires_identification_and_byte_rgb():
         encode_screen_color((1, 2, 3), identified=False)
     with pytest.raises(ProtocolError):
         encode_screen_color((256, 0, 0), identified=True)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "0002060601000000000000000000000000000000000000000000000000000000",
+        "0000000106060300000000000000000000000000000000000000000000000000",
+        "0000000000000000020606010000000000000000000000000000000000000000",
+        "0000000000000000000000000000000000010606030000000000000000000000",
+    ],
+)
+def test_audio_spectrum_reports_match_sanitized_frequency_capture(body):
+    report = encode_audio_spectrum(tuple(bytes.fromhex(body)), identified=True)
+    assert len(report) == 64
+    assert report[:8] == bytes.fromhex("0d000000000000f2")
+    assert report[8:40].hex() == body
+    assert report[40:] == bytes(24)
+
+
+def test_audio_spectrum_requires_identity_exact_length_and_captured_range():
+    with pytest.raises(UnsafeCommandError):
+        encode_audio_spectrum((0,) * 32, identified=False)
+    with pytest.raises(ProtocolError):
+        encode_audio_spectrum((0,) * 31, identified=True)
+    with pytest.raises(ProtocolError):
+        encode_audio_spectrum((0,) * 31 + (7,), identified=True)
+    with pytest.raises(ProtocolError):
+        encode_audio_spectrum((0,) * 31 + (True,), identified=True)
+
+
+def test_audio_report_validator_rejects_non_captured_fields():
+    valid = encode_audio_spectrum((0,) * 32, identified=True)
+    assert validate_audio_report(valid) == valid
+    invalid_header = bytearray(valid)
+    invalid_header[1] = 1
+    with pytest.raises(ProtocolError):
+        validate_audio_report(bytes(invalid_header))
+    invalid_trailer = bytearray(valid)
+    invalid_trailer[40] = 1
+    with pytest.raises(ProtocolError):
+        validate_audio_report(bytes(invalid_trailer))
+
+
+def test_userpic_pages_match_captured_headers_and_preserve_cross_page_rgb_data():
+    colors = [(0, 0, 0)] * 126
+    colors[1] = (255, 0, 0)
+    colors[9] = (0, 255, 0)
+    colors[41] = (0, 0, 255)
+    colors[89] = (255, 255, 255)
+    pages = encode_userpic_pages(tuple(colors), identified=True)
+
+    assert [page[:8].hex() for page in pages] == [
+        "0c00ff00380000bc",
+        "0c00ff01380000bb",
+        "0c00ff02380000ba",
+        "0c00ff03380000b9",
+        "0c00ff04380000b8",
+        "0c00ff05380000b7",
+        "0c00ff062a0100c3",
+    ]
+    rebuilt = b"".join(page[8 : 8 + page[4]] for page in pages)
+    assert len(rebuilt) == 378
+    assert rebuilt[3:6] == bytes.fromhex("ff0000")
+    assert rebuilt[27:30] == bytes.fromhex("00ff00")
+    assert rebuilt[123:126] == bytes.fromhex("0000ff")
+    assert rebuilt[267:270] == bytes.fromhex("ffffff")
+    assert all(validate_userpic_report(page) == page for page in pages)
+
+
+def test_userpic_encoder_and_validator_fail_closed():
+    with pytest.raises(UnsafeCommandError):
+        encode_userpic_pages(((0, 0, 0),) * 126, identified=False)
+    with pytest.raises(ProtocolError):
+        encode_userpic_pages(((0, 0, 0),) * 125, identified=True)
+    valid = encode_userpic_pages(((0, 0, 0),) * 126, identified=True)[-1]
+    invalid = bytearray(valid)
+    invalid[5] = 0
+    with pytest.raises(ProtocolError):
+        validate_userpic_report(bytes(invalid))
 
 
 def test_writes_are_fail_closed():

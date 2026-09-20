@@ -11,8 +11,10 @@ from typing import Any, Protocol
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .controller import compile_custom_pattern
 from .errors import DeviceBusyError as HardwareDeviceBusyError
-from .errors import ProtocolError, X68Error
+from .errors import ProtocolError, UnsafeCommandError, X68Error
+from .flash_guard import check_flash_write, record_flash_write
 from .streaming import DeviceBusyError, LatestFrameQueue, StreamOwners
 
 
@@ -53,6 +55,14 @@ class PresetRequest(BaseModel):
         ):
             raise ValueError("color must contain three integers in range 0..255")
         return value
+
+
+class CustomPatternRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    colors: dict[str, str | list[int]] = Field(min_length=1)
+    background: str | list[int] = "#000000"
+    confirm_flash_write: bool = False
 
 
 def _value(value: Any, key: str, default: Any = None) -> Any:
@@ -164,6 +174,7 @@ def create_app(manager: DeviceManager) -> FastAPI:
         lifespan=lifespan,
     )
     owners = StreamOwners()
+    custom_write_lock = asyncio.Lock()
     app.state.manager = manager
     app.state.stream_owners = owners
 
@@ -221,6 +232,38 @@ def create_app(manager: DeviceManager) -> FastAPI:
         except (X68Error, OSError) as exc:
             raise HTTPException(503, str(exc)) from exc
         return {"ok": True}
+
+    @app.put("/v1/devices/{device_id}/lighting/custom")
+    async def custom_pattern(device_id: str, body: CustomPatternRequest) -> dict[str, Any]:
+        device = _controller(manager, device_id)
+        if owners.owner(device_id) is not None:
+            raise HTTPException(409, "device is currently owned by a stream")
+        if not bool(_capabilities(device).get("static_per_key", False)):
+            raise HTTPException(501, "static per-key patterns are unsupported")
+        try:
+            pattern = compile_custom_pattern(body.colors, background=body.background)
+            async with custom_write_lock:
+                decision = check_flash_write(pattern, confirmed=body.confirm_flash_write)
+                if decision.unchanged:
+                    return {"ok": True, "written": False, "reason": "unchanged"}
+                await asyncio.to_thread(
+                    device.commit_custom_pattern,
+                    body.colors,
+                    background=body.background,
+                )
+                record_flash_write(decision)
+        except HardwareDeviceBusyError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (ProtocolError, UnsafeCommandError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (X68Error, OSError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {
+            "ok": True,
+            "written": True,
+            "storage": "USERPIC flash slot 0",
+            "mode": 13,
+        }
 
     @app.websocket("/v1/devices/{device_id}/lighting/stream")
     async def stream(websocket: WebSocket, device_id: str) -> None:

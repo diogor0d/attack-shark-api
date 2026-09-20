@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from attack_shark_x68he.cli import run_global_demo
+from attack_shark_x68he.cli import _key_colors, _row_colors, run_global_demo
+from attack_shark_x68he.errors import ProtocolError
 
 
 class FakeClock:
@@ -80,3 +81,25 @@ def test_demo_releases_global_stream_when_write_fails():
 
     assert device.acquired == 1
     assert device.released == 1
+
+
+def test_custom_key_assignments_are_parsed_and_duplicates_rejected():
+    assert _key_colors(["escape=#ff0000", "a=#00ff00"]) == {
+        "escape": "#ff0000",
+        "a": "#00ff00",
+    }
+    with pytest.raises(ProtocolError):
+        _key_colors(["escape=#ff0000", "escape=#00ff00"])
+    with pytest.raises(ProtocolError):
+        _key_colors(["missing-separator"])
+
+
+def test_custom_row_assignments_expand_to_physical_keys():
+    colors = _row_colors(["0=#ff0000", "4=#0000ff"])
+    assert colors["escape"] == "#ff0000"
+    assert colors["delete"] == "#ff0000"
+    assert colors["space"] == "#0000ff"
+    assert colors["arrow_right"] == "#0000ff"
+    assert "a" not in colors
+    with pytest.raises(ProtocolError):
+        _row_colors(["5=#ffffff"])

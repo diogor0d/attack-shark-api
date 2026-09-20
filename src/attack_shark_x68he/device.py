@@ -7,9 +7,11 @@ from .protocol import (
     GET_IDENTIFY,
     GET_LIGHT,
     GET_REVISION,
+    encode_audio_spectrum,
     encode_get,
     encode_light_preset,
     encode_screen_color,
+    encode_userpic_pages,
     parse_identify,
     parse_light_state,
     parse_revision,
@@ -21,10 +23,20 @@ from .transport import HidTransport
 
 class DeviceController:
     def __init__(
-        self, transport: HidTransport, *, device_id: str = "x68he", settle_seconds: float = 0.01
+        self,
+        transport: HidTransport,
+        *,
+        device_id: str = "x68he",
+        settle_seconds: float = 0.01,
+        userpic_mode_seconds: float = 0.6,
+        userpic_page_seconds: float = 0.1,
+        userpic_settle_seconds: float = 2.0,
     ):
         self.transport, self.device_id = transport, device_id
         self.settle_seconds = settle_seconds
+        self.userpic_mode_seconds = userpic_mode_seconds
+        self.userpic_page_seconds = userpic_page_seconds
+        self.userpic_settle_seconds = userpic_settle_seconds
         self.identity: DeviceIdentity | None = None
         self._saved_state: LightingState | None = None
         self._claim = None
@@ -83,6 +95,40 @@ class DeviceController:
         self._require_identity()
         self.transport.write(encode_screen_color(rgb, identified=True))
 
+    def acquire_audio_probe(self) -> LightingState:
+        """Claim the device, save its state, and select captured music mode 22."""
+        previous = self.acquire()
+        try:
+            self.set_preset(LightingState(22, 4, 4, 0, 0, previous.rgb))
+            return previous
+        except Exception:
+            self.release()
+            raise
+
+    def set_audio_spectrum(self, levels: tuple[int, ...]) -> None:
+        """Send one strictly validated volatile 32-bin spectrum report."""
+        self._require_identity()
+        self.transport.write(encode_audio_spectrum(levels, identified=True))
+
+    def commit_custom_pattern(self, colors: tuple[tuple[int, int, int], ...]) -> None:
+        """Persist one complete slot-0 USERPIC and leave mode 13 selected."""
+        self.acquire()
+        completed = False
+        try:
+            self.set_preset(LightingState(13, 4, 4, 0, 0, (0, 200, 200)))
+            if self.userpic_mode_seconds:
+                time.sleep(self.userpic_mode_seconds)
+            pages = encode_userpic_pages(colors, identified=True)
+            for index, page in enumerate(pages):
+                self.transport.write(page)
+                if index < len(pages) - 1 and self.userpic_page_seconds:
+                    time.sleep(self.userpic_page_seconds)
+            if self.userpic_settle_seconds:
+                time.sleep(self.userpic_settle_seconds)
+            completed = True
+        finally:
+            self.release(restore=not completed)
+
     def acquire(self) -> LightingState:
         self._require_identity()
         self._claim = claim(self.device_id)
@@ -95,9 +141,9 @@ class DeviceController:
             self._claim = None
             raise
 
-    def release(self) -> None:
+    def release(self, *, restore: bool = True) -> None:
         try:
-            if self._saved_state is not None and self.identity is not None:
+            if restore and self._saved_state is not None and self.identity is not None:
                 self.set_preset(self._saved_state)
         finally:
             self._saved_state = None

@@ -11,8 +11,10 @@ from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from .controller import PRESET_MODES, create_manager
-from .errors import DeviceBusyError
+from .controller import PRESET_MODES, compile_custom_pattern, create_manager
+from .errors import DeviceBusyError, ProtocolError, UnsafeCommandError
+from .flash_guard import check_flash_write, record_flash_write
+from .led_map import LED_MAP
 from .ownership import named_mutex
 
 
@@ -68,6 +70,34 @@ def run_global_demo(
     }
 
 
+def _key_colors(values: list[str]) -> dict[str, str]:
+    colors: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise ProtocolError("custom key colors must use NAME=#RRGGBB")
+        name, color = value.split("=", 1)
+        if not name or name in colors:
+            raise ProtocolError(f"invalid or repeated key name: {name}")
+        colors[name] = color
+    return colors
+
+
+def _row_colors(values: list[str]) -> dict[str, str]:
+    rows: dict[int, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise ProtocolError("custom row colors must use ROW=#RRGGBB")
+        raw_row, color = value.split("=", 1)
+        try:
+            row = int(raw_row)
+        except ValueError as exc:
+            raise ProtocolError("custom row must be an integer in range 0..4") from exc
+        if not 0 <= row <= 4 or row in rows:
+            raise ProtocolError(f"invalid or repeated row: {raw_row}")
+        rows[row] = color
+    return {led.name: color for row, color in rows.items() for led in LED_MAP if led.row == row}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="x68ctl")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -85,6 +115,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     demo.add_argument("--fps", type=int, choices=range(1, 21), default=10)
     demo.add_argument("--duration", type=_positive_seconds, default=10.0, metavar="SECONDS")
+
+    custom = subcommands.add_parser(
+        "set-custom", help="commit one static per-key pattern to USERPIC flash slot 0"
+    )
+    custom.add_argument(
+        "--key",
+        action="append",
+        default=[],
+        metavar="NAME=#RRGGBB",
+        help="set one named key; repeat for additional keys",
+    )
+    custom.add_argument(
+        "--row",
+        action="append",
+        default=[],
+        metavar="ROW=#RRGGBB",
+        help="set every key in physical row 0..4; individual --key values override it",
+    )
+    custom.add_argument("--background", default="#000000", metavar="#RRGGBB")
+    custom.add_argument(
+        "--confirm-flash-write",
+        action="store_true",
+        help="acknowledge that USERPIC is persistent flash and unsuitable for animation",
+    )
 
     serve = subcommands.add_parser("serve", help="start the localhost API")
     serve.add_argument("--port", type=int, default=8768)
@@ -147,6 +201,36 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({"ok": False, "interrupted": True, "restored": True}))
                 return 130
             print(json.dumps(result, indent=2))
+            return 0
+        if args.command == "set-custom":
+            try:
+                colors = {**_row_colors(args.row), **_key_colors(args.key)}
+                if not colors:
+                    raise ProtocolError("provide at least one --key or --row color")
+                pattern = compile_custom_pattern(colors, background=args.background)
+                decision = check_flash_write(
+                    pattern,
+                    confirmed=args.confirm_flash_write,
+                )
+                if decision.unchanged:
+                    print(json.dumps({"ok": True, "written": False, "reason": "unchanged"}))
+                    return 0
+                device.commit_custom_pattern(colors, background=args.background)
+                record_flash_write(decision)
+            except (ProtocolError, UnsafeCommandError) as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}))
+                return 2
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "written": True,
+                        "storage": "USERPIC flash slot 0",
+                        "mode": 13,
+                    },
+                    indent=2,
+                )
+            )
             return 0
         return 2
     finally:

@@ -1,14 +1,27 @@
 """Conservative ROYUAN/X68HE report construction and parsing."""
 
+from collections.abc import Sequence
+
 from .errors import ProtocolError, UnsafeCommandError
 from .models import ALLOWED_INTERNAL_IDS, LightingState
 
 REPORT_SIZE = 64
 GET_IDENTIFY, GET_REVISION, GET_LIGHT = 0x8F, 0x80, 0x87
 SET_LIGHT = 0x07
+SET_AUDIO = 0x0D
 SET_SCREEN_COLOR = 0x0E
 FLASH_USERPIC = 0x0C
-ALLOWED_OPCODES = frozenset({GET_IDENTIFY, GET_REVISION, GET_LIGHT, SET_LIGHT, SET_SCREEN_COLOR})
+ALLOWED_OPCODES = frozenset(
+    {
+        GET_IDENTIFY,
+        GET_REVISION,
+        GET_LIGHT,
+        SET_LIGHT,
+        FLASH_USERPIC,
+        SET_AUDIO,
+        SET_SCREEN_COLOR,
+    }
+)
 
 
 def checksum7(packet: bytes) -> int:
@@ -72,6 +85,84 @@ def encode_screen_color(rgb: tuple[int, int, int], *, identified: bool) -> bytes
     p[:4] = bytes([SET_SCREEN_COLOR, *rgb])
     p[7] = checksum7(p)
     return _report(bytes(p))
+
+
+def encode_audio_spectrum(levels: Sequence[int], *, identified: bool) -> bytes:
+    """Encode the captured volatile mode-22 spectrum report.
+
+    The controlled frequency capture established 32 spectrum bins at report
+    bytes 8 through 39. Only the observed firmware level range is accepted.
+    """
+    if not identified:
+        raise UnsafeCommandError("device identification is required before writes")
+    if len(levels) != 32:
+        raise ProtocolError("audio spectrum must contain exactly 32 levels")
+    if any(type(level) is not int or not 0 <= level <= 6 for level in levels):
+        raise ProtocolError("audio spectrum levels must be integers in range 0..6")
+    p = bytearray(REPORT_SIZE)
+    p[0] = SET_AUDIO
+    p[7] = checksum7(p)
+    p[8:40] = bytes(levels)
+    return bytes(p)
+
+
+def validate_audio_report(report: bytes) -> bytes:
+    """Apply the captured mode-22 shape as a second outbound safety boundary."""
+    if len(report) != REPORT_SIZE or report[0] != SET_AUDIO:
+        raise ProtocolError("audio report must be a 64-byte opcode 0x0D report")
+    if any(report[1:7]) or report[7] != checksum7(report):
+        raise ProtocolError("audio report header does not match the captured format")
+    if any(level > 6 for level in report[8:40]) or any(report[40:]):
+        raise ProtocolError("audio report body is outside the captured format")
+    return report
+
+
+def encode_userpic_pages(
+    colors: Sequence[tuple[int, int, int]], *, identified: bool
+) -> tuple[bytes, ...]:
+    """Encode one complete gen2 USERPIC slot-0 upload.
+
+    USERPIC is persistent flash storage. Callers must apply their own explicit
+    confirmation, deduplication, and rate limit before transmitting these pages.
+    """
+    if not identified:
+        raise UnsafeCommandError("device identification is required before writes")
+    if len(colors) != 126:
+        raise ProtocolError("USERPIC must contain exactly 126 RGB slots")
+    if any(
+        len(color) != 3
+        or any(type(component) is not int or not 0 <= component <= 255 for component in color)
+        for color in colors
+    ):
+        raise ProtocolError("USERPIC colors must contain three integer bytes")
+
+    data = bytes(component for color in colors for component in color)
+    pages = []
+    for page in range(7):
+        offset = page * 56
+        length = 56 if page < 6 else 42
+        report = bytearray(REPORT_SIZE)
+        report[:7] = bytes([FLASH_USERPIC, 0, 0xFF, page, length, int(page == 6), 0])
+        report[7] = checksum7(report)
+        report[8 : 8 + length] = data[offset : offset + length]
+        pages.append(bytes(report))
+    return tuple(pages)
+
+
+def validate_userpic_report(report: bytes) -> bytes:
+    """Reject every USERPIC shape except the captured seven-page slot-0 upload."""
+    if len(report) != REPORT_SIZE or report[0] != FLASH_USERPIC:
+        raise ProtocolError("USERPIC report must be a 64-byte opcode 0x0C report")
+    page = report[3]
+    if report[1] != 0 or report[2] != 0xFF or page > 6 or report[6] != 0:
+        raise ProtocolError("USERPIC header does not match the captured gen2 slot-0 format")
+    expected_length = 56 if page < 6 else 42
+    expected_final = int(page == 6)
+    if report[4] != expected_length or report[5] != expected_final:
+        raise ProtocolError("USERPIC page length or final flag is invalid")
+    if report[7] != checksum7(report) or any(report[8 + expected_length :]):
+        raise ProtocolError("USERPIC checksum or zero padding is invalid")
+    return report
 
 
 def parse_identify(report: bytes) -> int:

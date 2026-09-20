@@ -1,3 +1,4 @@
+import json
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from unittest.mock import Mock
@@ -67,12 +68,12 @@ def test_extract_ignores_interrupt_hid_input_and_uses_control_payload(monkeypatc
     assert "prohibited" not in records[0]
 
 
-def test_summarize_payloads_reports_changing_audio_body_bytes() -> None:
+def test_summarize_payloads_reports_complete_32_byte_audio_body() -> None:
     analyzer = load_analyzer()
     reports = []
-    for frame, body in enumerate((bytes(14), bytes([0, 3, 0, 9]) + bytes(10)), start=1):
+    for frame, body in enumerate((bytes(32), bytes([0, 3, 0, 9]) + bytes(28)), start=1):
         prefix = bytes([0x0D]) + bytes(6)
-        payload = prefix + bytes([analyzer.checksum(prefix, 7)]) + body + bytes(42)
+        payload = prefix + bytes([analyzer.checksum(prefix, 7)]) + body + bytes(24)
         reports.append(analyzer.classify(str(frame), str(frame / 10), payload))
 
     summary = analyzer.summarize_payloads(reports)["0x0D"]
@@ -84,4 +85,22 @@ def test_summarize_payloads_reports_changing_audio_body_bytes() -> None:
     assert summary["bytes_8_plus_changed_positions"] == [9, 11]
     assert summary["bytes_8_plus_nonzero_positions"] == [9, 11]
     assert len(summary["sample_prefixes"]) == 1
-    assert len(summary["sample_bodies_8_to_21"]) == 2
+    assert len(summary["sample_bodies_8_to_39"]) == 2
+    assert all(len(sample["body"]) == 64 for sample in summary["sample_bodies_8_to_39"])
+
+
+def test_sanitized_frequency_fixture_records_32_bin_observations() -> None:
+    fixture = Path(__file__).parent / "fixtures" / "mode22_spectrum_samples.json"
+    samples = json.loads(fixture.read_text(encoding="utf-8"))
+
+    assert [(sample["frequency_hz"], sample["peak_bin"]) for sample in samples] == [
+        (110, 2),
+        (220, 5),
+        (440, 9),
+        (880, 19),
+    ]
+    for sample in samples:
+        body = bytes.fromhex(sample["observed_body_hex"])
+        assert len(body) == 32
+        assert max(body, default=0) <= 6
+        assert 0 <= sample["peak_bin"] < 32

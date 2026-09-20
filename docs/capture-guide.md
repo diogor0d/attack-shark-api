@@ -67,7 +67,8 @@ These raw files remain outside Git under `%LOCALAPPDATA%\AttackSharkX68HE\captur
 | `preset-sequence-20260908.pcap` | `169c4dfe7f90c22d90e01bda5274215e2dcbbdbe3c69edec8f35ea99b9455e9b` | `0x07` preset writes |
 | `mode21-sequence-20260908.pcap` | `da23635931f7e43f7a430e248cbf38b02b658a30074e8ea567164b4cbd97ef2d` | `0x0E` whole-keyboard RGB |
 | `custom-pattern-20260908.pcap` | `0d3fd4a0cb006cf34d9b940c2d21a6317248cc6264f89e856acd86b5ed9e7959` | `0x0C` flash-backed pages |
-| `mode22-music-20260908.pcap` | `b3f1d875d14d7af991954070cdc6eadaf4dce278334813c368ea4a52b1988135` | `0x0D` cadence, zero payload |
+| `mode22-music-20260908.pcap` | `b3f1d875d14d7af991954070cdc6eadaf4dce278334813c368ea4a52b1988135` | `3,909` `0x0D` reports; 260-report 440 Hz response |
+| `mode22-frequency-sequence-20260920.pcap` | `6C0253445FE8E8310E0EDFEAD169E05C24CE0A9B743BD341E408EAC442E89AA8` | `8,979` `0x0D` reports; 32-bin spectrum response |
 
 The mode-21 hash is recorded from the capture used for the protocol notes; recompute it
 locally if the file is replaced.
@@ -92,13 +93,13 @@ printed to the terminal:
   --summary-only
 ```
 
-The remaining controlled experiment is mode 22 with a sequence of fixed system-output
-frequencies separated by silence. The existing 440 Hz capture proves that bytes 8-21 carry
-a volatile 14-value body while bytes 1-6 remain zero. New captures should establish which
-body positions respond to frequency and amplitude, then correlate those values with the
-physical keyboard. Even if these are spectrum bands or column heights, that would not prove
-arbitrary per-key RGB addressing. Recheck the USB address immediately before capture; the
-`1` above is only an example and is not persistent.
+The controlled mode-22 frequency sequence completed on 2026-09-20. Complete 64-byte
+reports show bytes 8-39 as a 32-byte body while bytes 1-6 remain zero. The 33-second WAV
+sequence produced peak bins 2, 5, 9, and 19 for 110, 220, 440, and 880 Hz respectively;
+all observed body values were in the range 0..6. The 1760 and 3520 Hz segments produced no
+active body. These results identify a volatile low-frequency spectrum representation, but
+not arbitrary per-key RGB addressing. Recheck the USB address immediately before every new
+capture; the `1` used for this capture is not persistent.
 
 After capture is running and Music Sync is selected in Attack Shark Driver, play the
 deterministic 33-second sequence:

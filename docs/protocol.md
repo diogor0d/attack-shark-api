@@ -7,6 +7,8 @@ Evidence labels used below:
 - **LOCAL**: observed in the installed Attack Shark Driver v4 3.1.12 or Windows device data.
 - **CAPTURED**: observed in a controlled USBPcap capture from the connected keyboard.
 - **UPSTREAM**: documented by the independent Sharkfin protocol research.
+- **HARDWARE VERIFIED**: sent by this implementation and confirmed visually on the physical
+  keyboard.
 - **CAPTURE NEEDED**: not yet confirmed against this physical keyboard.
 
 ## Identity and transport
@@ -48,8 +50,9 @@ The only public device write is `SET_LEDPARAM 0x07`, using `Bit8`:
 ```
 
 The package exposes the capture-derived whole-keyboard opcode `0x0E` only through the
-bounded global-colour WebSocket. Sending arbitrary raw reports is not part of the package
-interface, and the per-key endpoints remain unsupported.
+bounded global-colour WebSocket. It exposes `0x0C` only through the guarded static-pattern
+operation described below. Sending arbitrary raw reports is not part of the package
+interface, and volatile per-key endpoints remain unsupported.
 
 ### Sanitized vendor-driver capture
 
@@ -110,9 +113,11 @@ The installed driver declares per-key patterns, host-driven screen mode `21`, an
 `22`. Mode 21 is capture-verified as global colour only. The volatile per-key format, if one
 exists, remains **CAPTURE NEEDED**.
 
-`SET_USERPIC 0x0C` is not a live-frame mechanism. Published research says it commits RGB
-patterns to flash and that repeated uploads can stall some related controllers. It is
-therefore blocked for both the API and experimental animation.
+`SET_USERPIC 0x0C` is not a live-frame mechanism. Published research says its final page
+commits RGB patterns to flash and that repeated uploads can stall some related controllers.
+The implementation permits one strictly shaped seven-page upload for an explicitly
+confirmed static change. It blocks this command from frame and WebSocket paths, suppresses
+identical rewrites, and enforces a persistent ten-minute interval between different writes.
 
 A controlled Light Edit capture on 2026-09-08 confirms that this X68HE revision uses
 `0x0C` for per-key patterns. Selecting the custom pattern sent mode `13`, followed by seven
@@ -140,9 +145,17 @@ physical keys without additional writes:
 | Space | 41 | `00 00 FF` |
 | Right Arrow | 89 | `FF FF FF` |
 
-The remaining physical-to-matrix mapping is intentionally unverified. Because the only
-observed per-key path is flash-backed, continuous per-key animation is unsupported on the
-tested revision unless a separate volatile opcode is discovered.
+The installed driver's `Ry5088_x68v2_8k_DM` matrix for internal ID `2902` supplies the full
+66-key physical map. Its Escape, A, Space, and Right Arrow slots agree exactly with the four
+sparse capture anchors above. On 2026-09-20, this implementation uploaded a five-row test:
+red, green, blue, magenta, and white. The user visually confirmed all five rows on the
+physical keyboard, establishing arbitrary static addressing for all 66 exposed keys as
+**HARDWARE VERIFIED**.
+
+The firmware matrix has 126 RGB slots; only the 66 mapped physical slots are populated and
+all unused slots are zero. Because this verified path is flash-backed, continuous per-key
+animation is unsupported on the tested revision unless a separate volatile opcode is
+discovered.
 
 ## Music-follow mode
 
@@ -161,20 +174,72 @@ Every report had this eight-byte header and a valid `Bit7` checksum:
 ```
 
 Re-analysis of the complete 64-byte reports on 2026-09-20 corrected the earlier prefix-only
-interpretation. Bytes 1-6 stayed zero, but bytes 8-21 form a changing 14-byte body. Exactly
-260 consecutive reports had a non-zero body for 5.30 seconds, aligned with the controlled
-five-second 440 Hz system-output tone. Of those, 244 used this body:
+interpretation. Bytes 1-6 stayed zero and bytes 8-39 carry a 32-byte volatile body. The
+controlled frequency-sequence capture (`mode22-frequency-sequence-20260920.pcap`, SHA-256
+`6C0253445FE8E8310E0EDFEAD169E05C24CE0A9B743BD341E408EAC442E89AA8`) contained 8,979
+`0x0D` reports. Across the capture, body values ranged from `0` to `6`; the selected
+frequency segments produced these peak-bin observations:
+
+| System-output tone | Peak bin | Capture-relative active interval |
+| ---: | ---: | ---: |
+| 110 Hz | 2 | 147.420–150.723 s |
+| 220 Hz | 5 | 152.430–155.729 s |
+| 440 Hz | 9 | 157.419–160.737 s |
+| 880 Hz | 19 | 162.421–165.726 s |
+
+The 1760 Hz and 3520 Hz segments produced no active report body, consistent with the
+observed 32-bin low-frequency range. The earlier 2026-09-08 five-second 440 Hz capture
+(the separate 3,909-report capture listed below) contained 260 consecutive reports with a
+non-zero body for 5.30 seconds; 244 used this dominant 32-byte body:
 
 ```text
-00 00 00 00 00 00 00 00 02 06 06 01 00 00
+00 00 00 00 00 00 00 00 02 06 06 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 ```
 
 The other 16 reports form short ramp-up and ramp-down transitions. This proves that the
-helper samples system output and sends a volatile 14-value representation after the
-checksum. The spatial meaning and allowed range of those values remain **CAPTURE NEEDED**.
-The shape is consistent with spectrum levels or column heights, but it is not evidence of
-arbitrary per-key RGB addressing. No encoder or public API is provided until controlled
-frequency captures and observed keyboard output identify the fields.
+helper samples system output and sends a volatile 32-bin representation after the checksum.
+The spatial meaning of the bins and their relationship to physical keys remain **CAPTURE
+NEEDED**. The shape is consistent with spectrum levels or column heights, but it is not
+evidence of arbitrary per-key RGB addressing. No public per-key frame API is provided until
+controlled replay and observed keyboard output identify the rendering path.
+
+The repository includes a guarded replay probe for that observation step. It selects mode
+22, sends only the four dominant 32-bin bodies sanitized from the controlled capture, caps
+levels at the observed range `0..6`, and restores the exact state read before acquisition:
+
+```powershell
+.\.venv\Scripts\python.exe tools\replay_spectrum_probe.py
+```
+
+Opcode `0x0D` remains absent from the REST and WebSocket APIs. The HID transport applies a
+second shape check to its header, 32-bin body, and zero trailer before transmitting it.
+
+During the first physical replay on 2026-09-20, the captured low-frequency profiles were
+observed as diagonal illuminated bands running from left to right. Each band was about two
+to three keys wide and tilted slightly left. Repeated replay of the 880 Hz profile produced
+no visible lighting.
+This is user-observed evidence that firmware maps spectrum bins into spatial bands; it does
+not yet establish the exact bin-to-key transform. A later isolated-bin replay at bins 0, 8,
+16, 24, and 31 did not produce a clearly progressing single diagonal band, suggesting that
+the renderer requires an adjacent-bin cluster. The same probe can replay a captured-width
+`1,6,6,1` cluster at selected starting positions for the next mapping step:
+
+```powershell
+.\.venv\Scripts\python.exe tools\replay_spectrum_probe.py `
+  --bands 0,5,10,15,20,25,28 `
+  --interactive
+```
+
+Interactive mode continuously refreshes one pattern while its exact bin range is visible in
+the local console. Enter inserts a half-second zero frame and advances; `Q` exits and restores
+the prior lighting. This avoids relying on timed transitions or unseen labels.
+
+The physical patterns remained irregular, with unlit keys inside the apparent diagonal
+groups, and were not practical to describe as a stable key map. Combined with the frequency
+correlation, this establishes `0x0D` as input to a firmware-defined spectrum effect rather
+than a direct or per-key LED protocol. It remains useful for controlled research and custom
+audio visualization, but it does not satisfy the volatile per-key capability checkpoint for
+OpenRGB integration.
 
 ## Vendor-driver correlation
 
@@ -211,9 +276,11 @@ command is impossible, but it closes the remaining driver-exposed search path.
 
 ## Blocked command classes
 
-The transport rejects every write except allowlisted lighting commands. In particular it
-must never expose reset, bootloader, firmware update, calibration, flash erase, keymap,
-macro, USERPIC, screen-storage, or magnetic-switch opcodes.
+The transport rejects every write except allowlisted lighting commands. USERPIC is accepted
+only when it matches the captured slot-0, seven-page format, page lengths, final-page flag,
+checksum, and zero padding. In particular the package never exposes reset, bootloader,
+firmware update, calibration, flash erase, keymap, macro, screen-storage, or magnetic-switch
+opcodes.
 
 Sources:
 

@@ -140,7 +140,10 @@ def summarize_payloads(records: list[dict[str, object]]) -> dict[str, dict[str, 
             for position in range(width)
         ]
         prefixes = Counter(payload[:8].hex() for payload in payloads)
-        bodies = Counter(payload[8:22].hex() for payload in payloads if len(payload) >= 22)
+        # Mode 22 audio reports carry a 32-byte spectrum body at bytes 8..39.
+        # Keep the complete body in sanitized summaries; the former 8..21
+        # slice truncated the captured spectrum to 14 bytes.
+        bodies = Counter(payload[8:40].hex() for payload in payloads if len(payload) >= 40)
         summaries[opcode] = {
             "count": len(payloads),
             "unique_payloads": len(set(payloads)),
@@ -169,7 +172,7 @@ def summarize_payloads(records: list[dict[str, object]]) -> dict[str, dict[str, 
             "sample_prefixes": [
                 {"prefix": prefix, "count": count} for prefix, count in prefixes.most_common(8)
             ],
-            "sample_bodies_8_to_21": [
+            "sample_bodies_8_to_39": [
                 {"body": body, "count": count} for body, count in bodies.most_common(8)
             ],
         }

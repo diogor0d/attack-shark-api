@@ -1,8 +1,14 @@
 import pytest
 
-from attack_shark_x68he.controller import PRESET_MODES, X68Manager, preset_from_request
+from attack_shark_x68he.controller import (
+    PRESET_MODES,
+    X68Manager,
+    compile_custom_pattern,
+    preset_from_request,
+)
 from attack_shark_x68he.device import DeviceController
 from attack_shark_x68he.errors import DeviceBusyError, ProtocolError
+from attack_shark_x68he.led_map import LED_MAP
 
 
 def test_static_preset_maps_api_values_to_gen2_wire_values() -> None:
@@ -55,3 +61,35 @@ def test_manager_exposes_external_device_busy(monkeypatch) -> None:
     assert manager.busy is True
     with pytest.raises(DeviceBusyError):
         manager.get_device("x68he")
+
+
+def test_custom_pattern_compiles_named_keys_to_verified_firmware_slots() -> None:
+    pattern = compile_custom_pattern(
+        {
+            "escape": "#ff0000",
+            "a": "#00ff00",
+            "space": "#0000ff",
+            "arrow_right": "#ffffff",
+        }
+    )
+
+    assert len(pattern) == 126
+    assert pattern[1] == (255, 0, 0)
+    assert pattern[9] == (0, 255, 0)
+    assert pattern[41] == (0, 0, 255)
+    assert pattern[89] == (255, 255, 255)
+    assert sum(color != (0, 0, 0) for color in pattern) == 4
+
+
+def test_custom_pattern_rejects_unknown_keys_before_hid_access() -> None:
+    with pytest.raises(ProtocolError, match="unknown key"):
+        compile_custom_pattern({"not_a_key": "#ffffff"})
+
+
+def test_custom_pattern_background_applies_only_to_physical_keys() -> None:
+    pattern = compile_custom_pattern({"escape": "#ff0000"}, background="#010203")
+    physical_slots = {led.matrix_slot for led in LED_MAP}
+
+    assert pattern[1] == (255, 0, 0)
+    assert all(pattern[index] == (1, 2, 3) for index in physical_slots - {1})
+    assert all(pattern[index] == (0, 0, 0) for index in set(range(126)) - physical_slots)

@@ -34,8 +34,27 @@ if (Test-Path -LiteralPath $capturePath) {
 Write-Host "Capturing USB address $DeviceAddress on $FilterDevice"
 Write-Host "Output: $capturePath"
 Write-Host 'Press Ctrl+C after the controlled action finishes.'
-& $usbPcap `
-    -d $FilterDevice `
-    --devices $DeviceAddress `
-    --inject-descriptors `
-    -o $capturePath
+$arguments = @(
+    '-d', $FilterDevice,
+    '--devices', $DeviceAddress.ToString(),
+    '--inject-descriptors',
+    '-o', ('"{0}"' -f $capturePath)
+)
+
+# Start-Process -Wait waits for the process tree on Windows. Direct invocation
+# can return as soon as USBPcapCMD detaches its capture child, leaving a capture
+# running after PowerShell has returned to the prompt.
+$capture = Start-Process `
+    -FilePath $usbPcap `
+    -ArgumentList $arguments `
+    -NoNewWindow `
+    -PassThru `
+    -Wait
+
+if ($capture.ExitCode -ne 0) {
+    $failed = Get-Item -LiteralPath $capturePath -ErrorAction SilentlyContinue
+    if ($null -ne $failed -and $failed.Length -eq 0) {
+        Remove-Item -LiteralPath $failed.FullName -Force
+    }
+    throw "USBPcapCMD failed with exit code $($capture.ExitCode)"
+}

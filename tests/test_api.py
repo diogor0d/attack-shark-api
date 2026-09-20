@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from attack_shark_x68he.api import create_app
 from attack_shark_x68he.errors import DeviceBusyError
+from attack_shark_x68he.flash_guard import FlashDecision
 
 
 class Device:
@@ -31,6 +32,9 @@ class Device:
 
     def restore_state(self, value):
         self.restored = value
+
+    def commit_custom_pattern(self, colors, *, background):
+        self.calls.append(("custom", colors, background))
 
 
 class Manager:
@@ -121,6 +125,80 @@ def test_invalid_preset_is_rejected_without_write():
     assert manager.device.calls == []
 
 
+def test_static_custom_pattern_requires_flash_confirmation(monkeypatch):
+    manager = Manager()
+    manager.device.capabilities = {"static_per_key": True}
+    client = TestClient(create_app(manager))
+
+    response = client.put(
+        "/v1/devices/x68he/lighting/custom",
+        json={"colors": {"escape": "#ff0000"}},
+    )
+
+    assert response.status_code == 422
+    assert manager.device.calls == []
+
+
+def test_static_custom_pattern_commits_once_and_reports_unchanged(monkeypatch):
+    manager = Manager()
+    manager.device.capabilities = {"static_per_key": True}
+    client = TestClient(create_app(manager))
+    recorded = []
+    monkeypatch.setattr(
+        "attack_shark_x68he.api.check_flash_write",
+        lambda *_args, **_kwargs: FlashDecision("abc", False),
+    )
+    monkeypatch.setattr(
+        "attack_shark_x68he.api.record_flash_write", lambda decision: recorded.append(decision)
+    )
+
+    response = client.put(
+        "/v1/devices/x68he/lighting/custom",
+        json={
+            "colors": {"escape": "#ff0000", "space": [0, 0, 255]},
+            "background": "#010101",
+            "confirm_flash_write": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["written"] is True
+    assert manager.device.calls == [
+        ("custom", {"escape": "#ff0000", "space": [0, 0, 255]}, "#010101")
+    ]
+    assert recorded == [FlashDecision("abc", False)]
+
+    monkeypatch.setattr(
+        "attack_shark_x68he.api.check_flash_write",
+        lambda *_args, **_kwargs: FlashDecision("abc", True),
+    )
+    response = client.put(
+        "/v1/devices/x68he/lighting/custom",
+        json={"colors": {"escape": "#ff0000"}, "confirm_flash_write": True},
+    )
+    assert response.json() == {"ok": True, "written": False, "reason": "unchanged"}
+
+
+def test_static_custom_pattern_rejects_unknown_key_without_flash_check(monkeypatch):
+    manager = Manager()
+    manager.device.capabilities = {"static_per_key": True}
+    client = TestClient(create_app(manager))
+    checked = []
+    monkeypatch.setattr(
+        "attack_shark_x68he.api.check_flash_write",
+        lambda *_args, **_kwargs: checked.append(True),
+    )
+
+    response = client.put(
+        "/v1/devices/x68he/lighting/custom",
+        json={"colors": {"not_a_key": "#ff0000"}, "confirm_flash_write": True},
+    )
+
+    assert response.status_code == 422
+    assert checked == []
+    assert manager.device.calls == []
+
+
 def test_unproven_websocket_is_closed_clearly():
     client = TestClient(create_app(Manager()))
     with client.websocket_connect("/v1/devices/x68he/lighting/stream") as socket:
@@ -197,6 +275,13 @@ def test_global_stream_owns_device_and_blocks_preset_until_release():
         response = client.put(
             "/v1/devices/x68he/lighting/preset",
             json={"mode": "solid", "color": [1, 2, 3]},
+        )
+        assert response.status_code == 409
+        assert manager.device.calls == []
+
+        response = client.put(
+            "/v1/devices/x68he/lighting/custom",
+            json={"colors": {"escape": "#ff0000"}, "confirm_flash_write": True},
         )
         assert response.status_code == 409
         assert manager.device.calls == []

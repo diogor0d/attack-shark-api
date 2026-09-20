@@ -5,7 +5,13 @@ from typing import Any
 
 from .errors import DeviceBusyError, DeviceNotFoundError, UnsafeCommandError
 from .models import PID, VID
-from .protocol import ALLOWED_OPCODES
+from .protocol import (
+    ALLOWED_OPCODES,
+    FLASH_USERPIC,
+    SET_AUDIO,
+    validate_audio_report,
+    validate_userpic_report,
+)
 
 INTERFACE_NUMBER = 2
 USAGE_PAGE, USAGE = 0xFFFF, 2
@@ -51,6 +57,10 @@ class HidTransport:
             raise ValueError("protocol reports must contain 64 payload bytes")
         if report[0] not in ALLOWED_OPCODES:
             raise UnsafeCommandError(f"opcode 0x{report[0]:02X} is not allowlisted")
+        if report[0] == SET_AUDIO:
+            validate_audio_report(report)
+        if report[0] == FLASH_USERPIC:
+            validate_userpic_report(report)
         return self.handle.send_feature_report(bytes([0]) + report)
 
     def read(self, length: int = 64, timeout_ms: int = 500) -> bytes:

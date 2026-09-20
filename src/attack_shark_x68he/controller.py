@@ -8,6 +8,7 @@ from typing import Any
 
 from .device import DeviceController
 from .errors import DeviceBusyError, DeviceNotFoundError, ProtocolError, X68Error
+from .flash_guard import MIN_WRITE_INTERVAL_SECONDS
 from .led_map import LED_MAP, MAPPING_VERIFIED
 from .models import PID, VID, LightingState
 
@@ -76,6 +77,24 @@ def preset_from_request(payload: dict[str, Any]) -> LightingState:
     return LightingState(PRESET_MODES[mode_name], wire_speed, brightness, option, flags, color)
 
 
+def compile_custom_pattern(
+    colors_by_name: dict[str, Any], *, background: Any = "#000000"
+) -> tuple[tuple[int, int, int], ...]:
+    """Build the complete 126-slot matrix required by gen2 USERPIC."""
+    unknown = sorted(set(colors_by_name) - {led.name for led in LED_MAP})
+    if unknown:
+        raise ProtocolError(f"unknown key names: {', '.join(unknown)}")
+    base = _normalize_color(background)
+    slots = [(0, 0, 0)] * 126
+    for led in LED_MAP:
+        if led.matrix_slot is None:
+            raise ProtocolError(f"key has no verified matrix slot: {led.name}")
+        slots[led.matrix_slot] = base
+        if led.name in colors_by_name:
+            slots[led.matrix_slot] = _normalize_color(colors_by_name[led.name])
+    return tuple(slots)
+
+
 class ManagedX68HE:
     """Metadata and safe application operations for one connected keyboard."""
 
@@ -93,6 +112,9 @@ class ManagedX68HE:
         "global_color_streaming": True,
         "global_color_max_frame_rate": 20,
         "per_key_streaming": False,
+        "static_per_key": True,
+        "static_per_key_storage": "flash",
+        "custom_pattern_min_interval_seconds": int(MIN_WRITE_INTERVAL_SECONDS),
         "mapping_verified": MAPPING_VERIFIED,
         "preset_modes": tuple(PRESET_MODES),
     }
@@ -131,6 +153,23 @@ class ManagedX68HE:
 
     def release_global_stream(self) -> None:
         self._controller.release()
+
+    def acquire_audio_probe(self) -> LightingState:
+        """Acquire experimental mode-22 control without advertising an API capability."""
+        return self._controller.acquire_audio_probe()
+
+    def set_audio_spectrum(self, levels: tuple[int, ...]) -> None:
+        self._controller.set_audio_spectrum(levels)
+
+    def release_audio_probe(self) -> None:
+        self._controller.release()
+
+    def commit_custom_pattern(
+        self, colors_by_name: dict[str, Any], *, background: Any = "#000000"
+    ) -> tuple[tuple[int, int, int], ...]:
+        pattern = compile_custom_pattern(colors_by_name, background=background)
+        self._controller.commit_custom_pattern(pattern)
+        return pattern
 
     def close(self) -> None:
         self._controller.close()
