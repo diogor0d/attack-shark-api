@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/x68he-mark.svg" width="96" height="96" alt="X68HE keyboard project logo">
+</p>
+
 # Attack Shark X68HE Lighting Control
 
 Windows-first tools, a localhost API, and a web dashboard for controlling the lighting of
