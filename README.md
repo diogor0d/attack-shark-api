@@ -56,6 +56,19 @@ Invoke-RestMethod -Method Put `
   -Body '{"mode":"static","color":"#00ff80","brightness":4,"speed":0,"option":0}'
 ```
 
+Run a bounded whole-keyboard hue cycle. The command uses only volatile mode 21 / opcode
+`0x0E` and restores the exact lighting state it captured before the demo:
+
+```powershell
+.\.venv\Scripts\x68ctl.exe demo --fps 20 --duration 10
+```
+
+For a WebSocket soak test, start `x68ctl serve` in one terminal and run this in another:
+
+```powershell
+.\.venv\Scripts\python.exe tools\soak_global_stream.py --fps 20 --duration 900
+```
+
 See [the capture guide](docs/capture-guide.md), [protocol notes](docs/protocol.md), and
 [OpenRGB path](docs/openrgb.md) for the evidence and remaining work.
 

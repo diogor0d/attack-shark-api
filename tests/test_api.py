@@ -65,6 +65,15 @@ class BusyManager:
         pass
 
 
+def _enable_global_stream(manager):
+    manager.device.capabilities = {
+        "global_color_streaming": True,
+        "presets": True,
+    }
+    manager.device.acquire_global_stream = lambda: manager.device.capture_state()
+    manager.device.release_global_stream = lambda: manager.device.restore_state({"mode": "saved"})
+
+
 def test_health_and_device_metadata():
     client = TestClient(create_app(Manager()))
     assert client.get("/health").json()["status"] == "ok"
@@ -178,6 +187,52 @@ def test_global_stream_accepts_rgb_and_restores_state():
     assert ("release",) in manager.device.calls
 
 
+def test_global_stream_owns_device_and_blocks_preset_until_release():
+    manager = Manager()
+    _enable_global_stream(manager)
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/v1/devices/x68he/lighting/global-stream") as socket:
+        assert socket.receive_json()["type"] == "metadata"
+
+        response = client.put(
+            "/v1/devices/x68he/lighting/preset",
+            json={"mode": "solid", "color": [1, 2, 3]},
+        )
+        assert response.status_code == 409
+        assert manager.device.calls == []
+
+        socket.send_json({"type": "release"})
+        assert socket.receive_json() == {"type": "released"}
+
+    response = client.put(
+        "/v1/devices/x68he/lighting/preset",
+        json={"mode": "solid", "color": [1, 2, 3]},
+    )
+    assert response.status_code == 200
+    assert manager.device.calls[0][0] == "preset"
+
+
+def test_global_stream_disconnect_releases_device_for_preset():
+    manager = Manager()
+    _enable_global_stream(manager)
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/v1/devices/x68he/lighting/global-stream") as socket:
+        assert socket.receive_json()["type"] == "metadata"
+        response = client.put(
+            "/v1/devices/x68he/lighting/preset",
+            json={"mode": "solid", "color": [1, 2, 3]},
+        )
+        assert response.status_code == 409
+        assert manager.device.calls == []
+
+    response = client.put(
+        "/v1/devices/x68he/lighting/preset",
+        json={"mode": "solid", "color": [1, 2, 3]},
+    )
+    assert response.status_code == 200
+    assert manager.device.calls[0][0] == "preset"
+
+
 def test_global_stream_rejects_non_triplets_without_writing():
     manager = Manager()
     manager.device.capabilities = {"global_color_streaming": True}
@@ -191,3 +246,25 @@ def test_global_stream_rejects_non_triplets_without_writing():
         assert socket.receive_json()["error"]
         socket.send_json({"type": "release"})
     assert not any(call[0] == "global" for call in manager.device.calls)
+
+
+def test_global_stream_restores_and_reports_hid_writer_failure():
+    manager = Manager()
+    manager.device.capabilities = {"global_color_streaming": True}
+    manager.device.acquire_global_stream = lambda: manager.device.capture_state()
+
+    def fail_write(_rgb):
+        raise OSError("simulated HID failure")
+
+    manager.device.set_global_color = fail_write
+    manager.device.release_global_stream = lambda: manager.device.calls.append(("release",))
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/v1/devices/x68he/lighting/global-stream") as socket:
+        socket.receive_json()
+        socket.send_bytes(b"\x01\x02\x03")
+        socket.send_json({"type": "release"})
+        messages = [socket.receive_json(), socket.receive_json()]
+
+    assert messages[0] == {"type": "error", "error": "simulated HID failure"}
+    assert messages[1] == {"type": "released"}
+    assert ("release",) in manager.device.calls

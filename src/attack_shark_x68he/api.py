@@ -319,7 +319,7 @@ def create_app(manager: DeviceManager) -> FastAPI:
             with suppress(TimeoutError):
                 await asyncio.wait_for(queue.join(), timeout=1)
             writer.cancel()
-            with suppress(asyncio.CancelledError):
+            with suppress(asyncio.CancelledError, Exception):
                 await writer
             await owners.release(lease)
             with suppress(Exception):
@@ -337,7 +337,6 @@ def create_app(manager: DeviceManager) -> FastAPI:
             device = manager.get_device(device_id)
             if not _capabilities(device).get("global_color_streaming", False):
                 raise NotImplementedError("global colour streaming is unsupported")
-            previous = device.acquire_global_stream()
         except HardwareDeviceBusyError:
             await websocket.accept()
             await websocket.close(code=4409, reason="device is busy")
@@ -354,6 +353,34 @@ def create_app(manager: DeviceManager) -> FastAPI:
             await websocket.accept()
             await websocket.close(code=1011, reason=str(exc))
             return
+
+        try:
+            lease = await owners.acquire(device_id, websocket)
+        except DeviceBusyError:
+            await websocket.accept()
+            await websocket.close(code=4409, reason="device is already streaming")
+            return
+
+        try:
+            previous = device.acquire_global_stream()
+        except HardwareDeviceBusyError:
+            await owners.release(lease)
+            await websocket.accept()
+            await websocket.close(code=4409, reason="device is busy")
+            return
+        except NotImplementedError:
+            await owners.release(lease)
+            await websocket.accept()
+            await websocket.close(code=1011, reason="global colour streaming is unsupported")
+            return
+        except (X68Error, OSError) as exc:
+            await owners.release(lease)
+            await websocket.accept()
+            await websocket.close(code=1011, reason=str(exc))
+            return
+        except Exception:
+            await owners.release(lease)
+            raise
 
         queue = LatestFrameQueue(1)
         writer_error: Exception | None = None
@@ -402,7 +429,7 @@ def create_app(manager: DeviceManager) -> FastAPI:
             with suppress(TimeoutError):
                 await asyncio.wait_for(queue.join(), timeout=1)
             writer.cancel()
-            with suppress(asyncio.CancelledError):
+            with suppress(asyncio.CancelledError, Exception):
                 await writer
             with suppress(Exception):
                 release_stream = getattr(device, "release_global_stream", None)
@@ -412,15 +439,16 @@ def create_app(manager: DeviceManager) -> FastAPI:
                     release_stream()
                 else:
                     device.restore_state(previous)
+            await owners.release(lease)
             if writer_error is not None:
                 invalidate = getattr(manager, "invalidate", None)
                 if callable(invalidate):
                     invalidate(device_id)
+            if writer_error is not None:
+                with suppress(Exception):
+                    await websocket.send_json({"type": "error", "error": str(writer_error)})
             if explicit_release:
                 with suppress(Exception):
                     await websocket.send_json({"type": "released"})
-            if writer_error is not None:
-                with suppress(Exception):
-                    await websocket.send_json({"error": str(writer_error)})
 
     return app
