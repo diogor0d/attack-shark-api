@@ -111,6 +111,8 @@ class ManagedX68HE:
         "streaming_supported": False,
         "global_color_streaming": True,
         "global_color_max_frame_rate": 20,
+        "global_color_layers": True,
+        "global_color_layer_blend_modes": ("replace", "alpha", "add"),
         "per_key_streaming": False,
         "static_per_key": True,
         "static_per_key_storage": "flash",

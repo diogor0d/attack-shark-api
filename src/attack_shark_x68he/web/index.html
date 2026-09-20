@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="description" content="Local lighting control bench for the Attack Shark X68HE keyboard." />
+    <title>X68HE / Lighting bench</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="masthead">
+        <div class="brand-lockup">
+          <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+          <div>
+            <p class="eyebrow">ATTACK SHARK / LOCAL INSTRUMENT</p>
+            <h1>X68HE <span>/ lighting bench</span></h1>
+          </div>
+        </div>
+        <div class="header-actions">
+          <div class="connection-badge" id="connection-badge" data-state="unknown">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="connection-label">Checking device…</span>
+          </div>
+          <button class="button button-quiet" id="refresh-button" type="button">Refresh <span class="shortcut">R</span></button>
+        </div>
+      </header>
+
+      <section class="instrument-strip" aria-label="Device status">
+        <div class="strip-readout">
+          <span class="readout-label">BUS</span>
+          <strong id="status-value">Scanning local HID bus</strong>
+          <span class="readout-sub" id="status-detail">Waiting for /v1/devices</span>
+        </div>
+        <div class="strip-readout">
+          <span class="readout-label">IDENTITY</span>
+          <strong id="identity-value">—</strong>
+          <span class="readout-sub" id="identity-detail">VID/PID unavailable</span>
+        </div>
+        <div class="strip-readout">
+          <span class="readout-label">OWNER</span>
+          <strong id="owner-value">—</strong>
+          <span class="readout-sub" id="owner-detail">No active compositor session</span>
+        </div>
+        <div class="strip-readout strip-readout-last">
+          <span class="readout-label">CAPTURE</span>
+          <strong id="capture-value">—</strong>
+          <span class="readout-sub" id="capture-detail">Global colour path</span>
+        </div>
+      </section>
+
+      <main>
+        <div class="workbench-grid">
+          <section class="panel keyboard-panel" aria-labelledby="keyboard-heading">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">PHYSICAL MAP / 66 LED SLOTS</p>
+                <h2 id="keyboard-heading">Illuminated circuit grid</h2>
+              </div>
+              <span class="panel-index">A—01</span>
+            </div>
+            <p class="panel-intro">Select a colour, then tap keys to draft a static pattern. Tap the same colour again, Shift-click, or right-click to erase one key. The service writes only after you acknowledge the keyboard’s flash storage.</p>
+            <div class="keyboard-stage" id="keyboard-stage">
+              <div class="keyboard-grid" id="keyboard-grid" role="grid" aria-label="X68HE physical key map"></div>
+              <div class="grid-caption"><span><i class="legend-chip legend-chip-live"></i> mapped slot</span><span><i class="legend-chip legend-chip-selected"></i> draft colour</span><span class="mono" id="pattern-count">0 / 66 painted</span></div>
+            </div>
+            <div class="paint-toolbar">
+              <label class="colour-well" for="paint-colour">
+                <span class="swatch-preview" id="paint-preview"></span>
+                <span><span class="field-label">PAINT COLOUR</span><span class="mono" id="paint-value">#16D9E3</span></span>
+                <input id="paint-colour" type="color" value="#16d9e3" />
+              </label>
+              <div class="swatch-row" aria-label="Quick paint colours">
+                <button class="quick-swatch" type="button" data-colour="#16d9e3" aria-label="Cyan"></button>
+                <button class="quick-swatch" type="button" data-colour="#f5b942" aria-label="Amber"></button>
+                <button class="quick-swatch" type="button" data-colour="#e85d75" aria-label="Coral"></button>
+                <button class="quick-swatch" type="button" data-colour="#7c6cff" aria-label="Violet"></button>
+                <button class="quick-swatch" type="button" data-colour="#dce6e8" aria-label="White"></button>
+              </div>
+              <div class="toolbar-actions">
+                <button class="button button-quiet" id="clear-pattern" type="button">Clear draft</button>
+                <button class="button button-quiet" id="fill-row" type="button">Fill row</button>
+              </div>
+            </div>
+            <div class="background-line">
+              <label for="background-colour">Unpainted key background</label>
+              <input id="background-colour" type="color" value="#05090d" />
+              <span class="mono" id="background-value">#05090D</span>
+            </div>
+          </section>
+
+          <aside class="control-rail" aria-label="Lighting controls">
+            <section class="panel control-panel" aria-labelledby="preset-heading">
+              <div class="panel-heading compact-heading">
+                <div><p class="eyebrow">HARDWARE PROGRAM</p><h2 id="preset-heading">Preset engine</h2></div>
+                <span class="panel-index">B—01</span>
+              </div>
+              <form id="preset-form" class="form-stack">
+                <label class="field">Mode<select id="preset-mode" name="mode" required></select></label>
+                <div class="field-row">
+                  <label class="field">Colour<input id="preset-colour" name="color" type="color" value="#16d9e3" /></label>
+                  <label class="field">Option<input id="preset-option" name="option" type="number" min="0" max="15" value="0" /></label>
+                </div>
+                <label class="field">Brightness <output id="brightness-output">4 / 4</output><input id="preset-brightness" name="brightness" type="range" min="0" max="4" value="4" /></label>
+                <label class="field">Speed <output id="speed-output">2 / 4</output><input id="preset-speed" name="speed" type="range" min="0" max="4" value="2" /></label>
+                <button class="button button-primary" type="submit">Apply preset <span aria-hidden="true">↗</span></button>
+              </form>
+            </section>
+
+            <section class="panel identity-panel" aria-labelledby="identity-heading">
+              <div class="panel-heading compact-heading"><div><p class="eyebrow">DEVICE TELEMETRY</p><h2 id="identity-heading">Identity & limits</h2></div><span class="panel-index">B—02</span></div>
+              <dl class="telemetry-list">
+                <div><dt>Device</dt><dd id="device-name">—</dd></div>
+                <div><dt>Internal ID</dt><dd class="mono" id="internal-id">—</dd></div>
+                <div><dt>Revision</dt><dd class="mono" id="revision">—</dd></div>
+                <div><dt>LED map</dt><dd class="mono" id="led-count">—</dd></div>
+                <div><dt>Static storage</dt><dd id="static-storage">—</dd></div>
+              </dl>
+              <div class="capability-list" id="capability-list" aria-label="Capabilities"></div>
+            </section>
+          </aside>
+        </div>
+
+        <div class="lower-grid">
+          <section class="panel custom-panel" aria-labelledby="custom-heading">
+            <div class="panel-heading">
+              <div><p class="eyebrow">PERSISTENT WRITE / USERPIC SLOT 0</p><h2 id="custom-heading">Commit static pattern</h2></div>
+              <span class="panel-index">C—01</span>
+            </div>
+            <div class="warning-callout"><span class="warning-symbol" aria-hidden="true">!</span><p>This action writes the drafted map to keyboard flash. It is intentionally rate-limited and needs an explicit acknowledgement each time.</p></div>
+            <label class="confirm-line"><input id="flash-confirm" type="checkbox" /><span>I understand this writes persistent keyboard storage.</span></label>
+            <button class="button button-warning" id="commit-pattern" type="button" disabled>Write pattern to flash <span aria-hidden="true">↗</span></button>
+          </section>
+
+          <section class="panel layers-panel" aria-labelledby="layers-heading">
+            <div class="panel-heading">
+              <div><p class="eyebrow">GLOBAL COLOUR COMPOSITOR</p><h2 id="layers-heading">Live layers</h2></div>
+              <span class="panel-index">C—02</span>
+            </div>
+            <form id="layer-form" class="layer-form">
+              <div class="field-row layer-top-row"><label class="field">Layer ID<input id="layer-id" value="accent" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{0,63}" required /></label><label class="field">Colour<input id="layer-colour" type="color" value="#16d9e3" /></label><label class="field">Priority<input id="layer-priority" type="number" value="100" min="-10000" max="10000" /></label></div>
+              <div class="field-row"><label class="field">Opacity <output id="opacity-output">100%</output><input id="layer-opacity" type="range" min="0" max="1" step="0.01" value="1" /></label><label class="field">Blend<select id="layer-blend"><option value="replace">replace</option><option value="alpha">alpha</option><option value="add">add</option></select></label></div>
+              <div class="field-row"><label class="field">TTL (ms)<input id="layer-ttl" type="number" min="1" max="86400000" placeholder="persistent" /></label><label class="field">Fade out (ms)<input id="layer-fade" type="number" min="0" max="60000" placeholder="0" /></label><button class="button button-primary layer-submit" type="submit">Set layer <span aria-hidden="true">↗</span></button></div>
+            </form>
+            <div class="layer-list-heading"><span>ACTIVE SOURCES / <span id="layer-count">0</span></span><button class="text-button" id="clear-layers" type="button">Clear web-ui source</button></div>
+            <div class="layer-list" id="layer-list"><p class="empty-state">No active layers. Add a layer to claim the global colour path.</p></div>
+          </section>
+        </div>
+      </main>
+
+      <details class="reference-drawer">
+        <summary><span>API / integration quick reference</span><span class="summary-hint">local-only · v1</span></summary>
+        <div class="reference-grid">
+          <div><span class="method get">GET</span><code>/v1/devices</code><p>Discover the HID device and report unavailable or busy state.</p></div>
+          <div><span class="method put">PUT</span><code>/v1/devices/x68he/lighting/preset</code><p>Apply a firmware preset with colour, brightness, speed and option.</p></div>
+          <div><span class="method put">PUT</span><code>/v1/devices/x68he/lighting/global-layers/web-ui/{id}</code><p>Compose whole-keyboard colour layers with priority and lifetime.</p></div>
+          <div><span class="method warn">PUT</span><code>/v1/devices/x68he/lighting/custom</code><p>Guarded persistent per-key write. This panel always sends <code>confirm_flash_write</code> explicitly.</p></div>
+        </div>
+      </details>
+      <footer><span>X68HE LIGHTING BENCH</span><span class="mono">LOCAL / FAIL-CLOSED UI</span><span id="footer-time">—</span></footer>
+    </div>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>

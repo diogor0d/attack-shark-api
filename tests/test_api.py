@@ -1,3 +1,5 @@
+import time
+
 from fastapi.testclient import TestClient
 
 from attack_shark_x68he.api import create_app
@@ -84,6 +86,44 @@ def test_health_and_device_metadata():
     response = client.get("/v1/devices/x68he")
     assert response.status_code == 200
     assert response.json()["led_count"] == 2
+
+
+def test_dashboard_and_browser_security_headers_are_served_locally():
+    client = TestClient(create_app(Manager()))
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["x-frame-options"] == "DENY"
+    assert "default-src 'self'" in response.headers["content-security-policy"]
+
+    asset = client.get("/assets/app.js")
+    assert asset.status_code == 200
+    assert "javascript" in asset.headers["content-type"]
+    assert '"use strict"' in asset.text
+
+
+def test_lighting_state_returns_named_preset_without_mutation():
+    manager = Manager()
+    manager.device.capture_state = lambda: {
+        "mode": 1,
+        "speed": 4,
+        "brightness": 3,
+        "option": 0,
+        "flags": 7,
+        "rgb": (12, 34, 56),
+    }
+    response = TestClient(create_app(manager)).get("/v1/devices/x68he/lighting/state")
+    assert response.status_code == 200
+    assert response.json() == {
+        "mode": 1,
+        "mode_name": "static",
+        "speed": 0,
+        "wire_speed": 4,
+        "brightness": 3,
+        "option": 0,
+        "flags": 7,
+        "rgb": [12, 34, 56],
+    }
 
 
 def test_global_stream_capabilities_advertise_20_fps_and_no_per_key_support():
@@ -353,3 +393,185 @@ def test_global_stream_restores_and_reports_hid_writer_failure():
     assert messages[0] == {"type": "error", "error": "simulated HID failure"}
     assert messages[1] == {"type": "released"}
     assert ("release",) in manager.device.calls
+
+
+def test_global_layers_compose_multiple_apps_and_restore_after_last_layer():
+    manager = Manager()
+    _enable_global_stream(manager)
+    manager.device.set_global_color = lambda rgb: manager.device.calls.append(("global", rgb))
+
+    with TestClient(create_app(manager)) as client:
+        response = client.put(
+            "/v1/devices/x68he/lighting/global-layers/game/base",
+            json={"color": [10, 20, 30], "priority": 0},
+        )
+        assert response.status_code == 200
+        assert response.json()["output"] == [10, 20, 30]
+
+        response = client.put(
+            "/v1/devices/x68he/lighting/global-layers/notifications/alert",
+            json={"color": "#ff0000", "priority": 200},
+        )
+        assert response.status_code == 200
+        assert response.json()["output"] == [255, 0, 0]
+        assert len(response.json()["layers"]) == 2
+
+        blocked = client.put(
+            "/v1/devices/x68he/lighting/preset",
+            json={"mode": "solid", "color": [1, 2, 3]},
+        )
+        assert blocked.status_code == 409
+
+        response = client.delete("/v1/devices/x68he/lighting/global-layers/notifications/alert")
+        assert response.json()["output"] == [10, 20, 30]
+        response = client.delete("/v1/devices/x68he/lighting/global-layers/game/base")
+        assert response.json()["active"] is False
+        assert response.json()["layers"] == []
+
+    assert manager.device.restored == {"mode": "saved"}
+
+
+def test_global_layer_websocket_owns_and_cleans_up_its_source():
+    manager = Manager()
+    _enable_global_stream(manager)
+    manager.device.set_global_color = lambda rgb: manager.device.calls.append(("global", rgb))
+
+    with TestClient(create_app(manager)) as client:
+        with client.websocket_connect(
+            "/v1/devices/x68he/lighting/global-layers/my-app/stream"
+        ) as socket:
+            metadata = socket.receive_json()
+            assert metadata["scope"] == "global_color"
+            assert metadata["blend_modes"] == ["replace", "alpha", "add"]
+            socket.send_json(
+                {
+                    "type": "set",
+                    "layer_id": "keypress",
+                    "color": [0, 255, 0],
+                    "priority": 200,
+                    "ttl_ms": 500,
+                    "fade_out_ms": 100,
+                }
+            )
+            updated = socket.receive_json()
+            assert updated["type"] == "updated"
+            assert updated["output"] == [0, 255, 0]
+            socket.send_json({"type": "release"})
+            released = socket.receive_json()
+            assert released["type"] == "released"
+            assert released["removed"] == 1
+
+        assert client.get("/v1/devices/x68he/lighting/global-layers").json()["layers"] == []
+
+    assert manager.device.restored == {"mode": "saved"}
+
+
+def test_global_layer_ttl_expires_and_releases_device():
+    manager = Manager()
+    _enable_global_stream(manager)
+    manager.device.set_global_color = lambda rgb: manager.device.calls.append(("global", rgb))
+
+    with TestClient(create_app(manager)) as client:
+        response = client.put(
+            "/v1/devices/x68he/lighting/global-layers/app/short",
+            json={"color": [1, 2, 3], "ttl_ms": 20},
+        )
+        assert response.status_code == 200
+        time.sleep(0.15)
+        status = client.get("/v1/devices/x68he/lighting/global-layers").json()
+        assert status["active"] is False
+        assert status["layers"] == []
+
+    assert manager.device.restored == {"mode": "saved"}
+
+
+def test_global_layer_rejects_fade_without_compatible_ttl():
+    manager = Manager()
+    _enable_global_stream(manager)
+    client = TestClient(create_app(manager))
+
+    no_ttl = client.put(
+        "/v1/devices/x68he/lighting/global-layers/app/invalid",
+        json={"color": [1, 2, 3], "fade_out_ms": 100},
+    )
+    longer_than_ttl = client.put(
+        "/v1/devices/x68he/lighting/global-layers/app/invalid",
+        json={"color": [1, 2, 3], "ttl_ms": 100, "fade_out_ms": 101},
+    )
+
+    assert no_ttl.status_code == 422
+    assert longer_than_ttl.status_code == 422
+    assert manager.device.calls == []
+
+
+def test_global_layer_restore_failure_is_reported_and_releases_api_owner():
+    manager = Manager()
+    _enable_global_stream(manager)
+    manager.device.set_global_color = lambda rgb: manager.device.calls.append(("global", rgb))
+
+    def fail_restore():
+        raise OSError("restore failed")
+
+    manager.device.release_global_stream = fail_restore
+    with TestClient(create_app(manager)) as client:
+        assert (
+            client.put(
+                "/v1/devices/x68he/lighting/global-layers/app/base",
+                json={"color": [1, 2, 3]},
+            ).status_code
+            == 200
+        )
+        response = client.delete("/v1/devices/x68he/lighting/global-layers/app/base")
+        assert response.status_code == 503
+        assert "restore failed" in response.json()["detail"]
+        metadata = client.get("/v1/devices/x68he").json()
+        assert metadata["owner"] is False
+
+
+def test_global_layer_writer_failure_clears_layers_and_releases_owner():
+    manager = Manager()
+    _enable_global_stream(manager)
+
+    def fail_write(_rgb):
+        raise OSError("HID write failed")
+
+    manager.device.set_global_color = fail_write
+    with TestClient(create_app(manager)) as client:
+        response = client.put(
+            "/v1/devices/x68he/lighting/global-layers/app/base",
+            json={"color": [1, 2, 3]},
+        )
+        assert response.status_code == 200
+        time.sleep(0.1)
+        status = client.get("/v1/devices/x68he/lighting/global-layers").json()
+        assert status["active"] is False
+        assert status["layers"] == []
+        assert status["last_error"] == "HID write failed"
+        assert client.get("/v1/devices/x68he").json()["owner"] is False
+
+
+def test_global_layer_websocket_rejects_duplicate_source_and_malformed_messages():
+    manager = Manager()
+    _enable_global_stream(manager)
+    manager.device.set_global_color = lambda rgb: manager.device.calls.append(("global", rgb))
+
+    with (
+        TestClient(create_app(manager)) as client,
+        client.websocket_connect(
+            "/v1/devices/x68he/lighting/global-layers/same-source/stream"
+        ) as first,
+    ):
+        assert first.receive_json()["type"] == "metadata"
+        with client.websocket_connect(
+            "/v1/devices/x68he/lighting/global-layers/same-source/stream"
+        ) as duplicate:
+            closed = duplicate.receive()
+            assert closed["type"] == "websocket.close"
+            assert closed["code"] == 4409
+
+        first.send_text("not-json")
+        assert first.receive_json()["status"] == 422
+        first.send_json({"type": "set", "layer_id": 123, "color": [1, 2, 3]})
+        assert first.receive_json()["status"] == 422
+        first.send_json({"type": "release"})
+        assert first.receive_json()["type"] == "released"

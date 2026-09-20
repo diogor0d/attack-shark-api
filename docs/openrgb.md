@@ -10,6 +10,12 @@ updates use flash-backed `0x0C` pages. The complete 66-key mapping and a static 
 pattern are hardware-verified in the Python implementation, but that guarded operation is
 deliberately unsuitable for OpenRGB animation. No per-key OpenRGB controller is added.
 
+Static inspection also ruled out the installed driver's `SET_USERGIF 0x12` path. It uploads
+paged, delayed animation frames for other device layouts that advertise `LightUserColor`;
+the X68HE layouts for all three known internal IDs omit that feature. The vendor firmware
+metadata service currently returns `Record not found` for IDs `2270`, `2472`, and `2902`, so
+there is no exact image available from that path to verify a hidden RAM-backed command.
+
 After a volatile frame protocol passes hardware validation:
 
 1. Add a dedicated HID detector for `3151:502D`, interface 2, usage page `0xFFFF`, usage 2.

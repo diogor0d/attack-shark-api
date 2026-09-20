@@ -274,6 +274,42 @@ per-key lighting command: screen colour uses `0x0E`, music uses `0x0D`, and cust
 data uses flash-backed `0x0C`. This does not prove that an undocumented keyboard-firmware
 command is impossible, but it closes the remaining driver-exposed search path.
 
+### Rejected USERGIF candidate and firmware lookup
+
+The gen2 base class in the installed renderer also implements `SET_USERGIF 0x12` for
+devices that advertise `LightUserColor`. This is an onboard animation upload rather than a
+live frame command. The renderer starts an upload, waits 300 ms, and then writes every
+animation frame as seven paged reports containing a frame number, frame delay, and 126 RGB
+slots. Some other ROYUAN families use a different `SET_USERGIF` opcode, so the numeric value
+must not be generalized across controllers.
+
+The X68HE records for internal IDs `2270`, `2472`, and `2902` all use a light layout that
+omits `LightUserColor`. Their exposed host-driven modes stop at music follow and screen
+colour. Consequently, `0x12` is not allowlisted or probed on this keyboard: the installed
+driver supplies no evidence that X68HE firmware accepts it, and its upload structure is
+storage-oriented even on models that do.
+
+The driver's official firmware lookup was reproduced on 2026-09-20. It sends an Axios JSON
+`POST` to:
+
+```text
+https://api2.rongyuan.tech:3816/api/v2/get_fw_version
+{"dev_id": 2902}
+```
+
+The service returned HTTP 500 with `Record not found`. The same response was returned for
+the other documented X68HE IDs, `2270` and `2472`. No `file_path` was supplied, so there is
+no official firmware image available through the installed driver's metadata path for
+offline dispatcher analysis. A historical public X68HE release contains a 101,868,672-byte
+Windows driver installer with SHA-256
+`3EE70880C8B5ADCD469A0E3EBEFA7E280A22FA23FF74E369955511A2C58E04A2`; it is not a confirmed
+standalone keyboard firmware image and was not executed or used as protocol evidence.
+
+At this checkpoint, arbitrary per-key control is fully verified only for occasional static
+patterns through guarded `0x0C` uploads. A safe direct-mode implementation would require an
+exact X68HE firmware image or a capture from a vendor implementation that emits volatile
+per-key frames. Blind opcode probing cannot establish that safely and remains disabled.
+
 ## Blocked command classes
 
 The transport rejects every write except allowlisted lighting commands. USERPIC is accepted

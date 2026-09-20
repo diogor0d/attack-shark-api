@@ -7,9 +7,29 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.idea/
+.vscode/
+*.log
+
+# Local configuration and credentials must never be committed.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
 
 # USB captures can contain unrelated device traffic and must remain local.
 captures/
 .captures/
 *.pcap
 *.pcapng
+*.usbpcap
+*.etl

@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, Literal, Protocol
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .controller import compile_custom_pattern
+from .broker import GlobalLayerBroker
+from .controller import PRESET_MODES, compile_custom_pattern
 from .errors import DeviceBusyError as HardwareDeviceBusyError
 from .errors import ProtocolError, UnsafeCommandError, X68Error
 from .flash_guard import check_flash_write, record_flash_write
@@ -63,6 +69,31 @@ class CustomPatternRequest(BaseModel):
     colors: dict[str, str | list[int]] = Field(min_length=1)
     background: str | list[int] = "#000000"
     confirm_flash_write: bool = False
+
+
+class GlobalLayerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    color: str | list[int]
+    priority: int = Field(default=0, ge=-10_000, le=10_000)
+    opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+    blend_mode: Literal["replace", "alpha", "add"] = "replace"
+    ttl_ms: int | None = Field(default=None, ge=1, le=86_400_000)
+    fade_out_ms: int = Field(default=0, ge=0, le=60_000)
+
+    @field_validator("color")
+    @classmethod
+    def valid_color(cls, value: str | list[int]) -> str | list[int]:
+        _decode_color(value, "color")
+        return value
+
+    @model_validator(mode="after")
+    def valid_fade(self) -> GlobalLayerRequest:
+        if self.fade_out_ms and self.ttl_ms is None:
+            raise ValueError("fade_out_ms requires ttl_ms")
+        if self.ttl_ms is not None and self.fade_out_ms > self.ttl_ms:
+            raise ValueError("fade_out_ms cannot exceed ttl_ms")
+        return self
 
 
 def _value(value: Any, key: str, default: Any = None) -> Any:
@@ -122,6 +153,30 @@ def _decode_color(value: Any, name: str) -> bytes:
     raise ValueError(f"invalid RGB color for {name}")
 
 
+_LAYER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_WEB_ROOT = Path(__file__).with_name("web")
+
+
+def _validate_layer_id(value: str, name: str) -> str:
+    if not isinstance(value, str) or not _LAYER_ID.fullmatch(value):
+        raise ValueError(f"{name} must match {_LAYER_ID.pattern}")
+    return value
+
+
+def _layer_values(body: GlobalLayerRequest) -> dict[str, Any]:
+    expires_at = None
+    if body.ttl_ms is not None:
+        expires_at = time.monotonic() + body.ttl_ms / 1000
+    return {
+        "color": tuple(_decode_color(body.color, "color")),
+        "priority": body.priority,
+        "opacity": body.opacity,
+        "blend_mode": body.blend_mode,
+        "expires_at": expires_at,
+        "fade_out_seconds": body.fade_out_ms / 1000,
+    }
+
+
 def _frame_from_json(payload: Any, device: Any) -> bytes:
     leds = _value(device, "led_map", _value(device, "leds", [])) or []
     colors = payload.get("colors") if isinstance(payload, dict) else None
@@ -161,9 +216,15 @@ def _global_color(message: Any) -> tuple[int, int, int]:
 
 
 def create_app(manager: DeviceManager) -> FastAPI:
+    owners = StreamOwners()
+    layer_broker = GlobalLayerBroker(manager, owners)
+    layer_socket_owners: dict[tuple[str, str], WebSocket] = {}
+    layer_socket_lock = asyncio.Lock()
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
+        await layer_broker.close()
         close = getattr(manager, "close", None)
         if close is not None:
             close()
@@ -173,14 +234,32 @@ def create_app(manager: DeviceManager) -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
-    owners = StreamOwners()
+    app.mount("/assets", StaticFiles(directory=_WEB_ROOT), name="dashboard-assets")
     custom_write_lock = asyncio.Lock()
     app.state.manager = manager
     app.state.stream_owners = owners
+    app.state.layer_broker = layer_broker
+
+    @app.middleware("http")
+    async def browser_security_headers(request: Request, call_next: Any) -> Any:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "connect-src 'self' ws://127.0.0.1:8768 ws://localhost:8768; img-src 'self' data:; "
+            "font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        )
+        return response
+
+    @app.get("/", include_in_schema=False)
+    async def dashboard() -> FileResponse:
+        return FileResponse(_WEB_ROOT / "index.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "service": "attack-shark-x68he"}
+        return {"status": "ok", "service": "attack-shark-x68he", "dashboard": "/"}
 
     @app.get("/v1/devices")
     async def devices() -> dict[str, Any]:
@@ -194,6 +273,31 @@ def create_app(manager: DeviceManager) -> FastAPI:
     @app.get("/v1/devices/{device_id}")
     async def device_info(device_id: str) -> dict[str, Any]:
         return _metadata(_controller(manager, device_id), owners)
+
+    @app.get("/v1/devices/{device_id}/lighting/state")
+    async def lighting_state(device_id: str) -> dict[str, Any]:
+        device = _controller(manager, device_id)
+        if owners.owner(device_id) is not None:
+            raise HTTPException(409, "device is currently owned by a stream")
+        try:
+            state = await asyncio.to_thread(device.capture_state)
+        except (X68Error, OSError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        mode = int(_value(state, "mode", -1))
+        rgb = tuple(_value(state, "rgb", (0, 0, 0)))
+        wire_speed = int(_value(state, "speed", 0))
+        return {
+            "mode": mode,
+            "mode_name": next(
+                (name for name, value in PRESET_MODES.items() if value == mode), None
+            ),
+            "speed": 4 - wire_speed if 0 <= wire_speed <= 4 else wire_speed,
+            "wire_speed": wire_speed,
+            "brightness": int(_value(state, "brightness", 0)),
+            "option": int(_value(state, "option", 0)),
+            "flags": int(_value(state, "flags", 0)),
+            "rgb": rgb,
+        }
 
     @app.put("/v1/devices/{device_id}/lighting/preset")
     async def preset(device_id: str, body: PresetRequest) -> dict[str, Any]:
@@ -264,6 +368,162 @@ def create_app(manager: DeviceManager) -> FastAPI:
             "storage": "USERPIC flash slot 0",
             "mode": 13,
         }
+
+    @app.get("/v1/devices/{device_id}/lighting/global-layers")
+    async def global_layers(device_id: str) -> dict[str, Any]:
+        device = _controller(manager, device_id)
+        if not _capabilities(device).get("global_color_streaming", False):
+            raise HTTPException(501, "global colour layering is unsupported")
+        return layer_broker.session(device_id).status()
+
+    @app.put("/v1/devices/{device_id}/lighting/global-layers/{source_id}/{layer_id}")
+    async def put_global_layer(
+        device_id: str, source_id: str, layer_id: str, body: GlobalLayerRequest
+    ) -> dict[str, Any]:
+        try:
+            _validate_layer_id(source_id, "source_id")
+            _validate_layer_id(layer_id, "layer_id")
+            device = _controller(manager, device_id)
+            return await layer_broker.session(device_id).upsert(
+                device, source_id, layer_id, **_layer_values(body)
+            )
+        except (DeviceBusyError, HardwareDeviceBusyError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except NotImplementedError as exc:
+            raise HTTPException(501, str(exc)) from exc
+        except (ValueError, ProtocolError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (X68Error, OSError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+
+    @app.delete("/v1/devices/{device_id}/lighting/global-layers/{source_id}/{layer_id}")
+    async def delete_global_layer(device_id: str, source_id: str, layer_id: str) -> dict[str, Any]:
+        _controller(manager, device_id)
+        try:
+            _validate_layer_id(source_id, "source_id")
+            _validate_layer_id(layer_id, "layer_id")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        try:
+            removed, status = await layer_broker.session(device_id).remove(source_id, layer_id)
+        except (X68Error, OSError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {"removed": removed, **status}
+
+    @app.delete("/v1/devices/{device_id}/lighting/global-layers/{source_id}")
+    async def clear_global_source(device_id: str, source_id: str) -> dict[str, Any]:
+        _controller(manager, device_id)
+        try:
+            _validate_layer_id(source_id, "source_id")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        try:
+            removed, status = await layer_broker.session(device_id).clear_source(source_id)
+        except (X68Error, OSError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {"removed": removed, **status}
+
+    @app.websocket("/v1/devices/{device_id}/lighting/global-layers/{source_id}/stream")
+    async def global_layer_stream(websocket: WebSocket, device_id: str, source_id: str) -> None:
+        try:
+            _validate_layer_id(source_id, "source_id")
+            device = manager.get_device(device_id)
+            if not _capabilities(device).get("global_color_streaming", False):
+                raise NotImplementedError("global colour layering is unsupported")
+        except (KeyError, LookupError, AttributeError):
+            await websocket.accept()
+            await websocket.close(code=4404, reason="unknown or disconnected device")
+            return
+        except ValueError as exc:
+            await websocket.accept()
+            await websocket.close(code=4400, reason=str(exc))
+            return
+        except HardwareDeviceBusyError:
+            await websocket.accept()
+            await websocket.close(code=4409, reason="device is busy")
+            return
+        except NotImplementedError as exc:
+            await websocket.accept()
+            await websocket.close(code=1011, reason=str(exc))
+            return
+
+        source_key = (device_id, source_id)
+        async with layer_socket_lock:
+            if source_key in layer_socket_owners:
+                await websocket.accept()
+                await websocket.close(code=4409, reason="source already has an active socket")
+                return
+            layer_socket_owners[source_key] = websocket
+
+        session = layer_broker.session(device_id)
+        await websocket.accept()
+        await websocket.send_json(
+            {
+                "type": "metadata",
+                "source_id": source_id,
+                "scope": "global_color",
+                "max_frame_rate": 20,
+                "blend_modes": ["replace", "alpha", "add"],
+            }
+        )
+        try:
+            while True:
+                event = await websocket.receive()
+                if event.get("type") == "websocket.disconnect":
+                    break
+                if event.get("text") is None:
+                    await websocket.send_json(
+                        {"type": "error", "status": 422, "error": "messages must be JSON text"}
+                    )
+                    continue
+                try:
+                    message = json.loads(event["text"])
+                    action = message.get("type") if isinstance(message, dict) else None
+                    if action == "set":
+                        layer_id = _validate_layer_id(message.get("layer_id", ""), "layer_id")
+                        body = GlobalLayerRequest.model_validate(
+                            {
+                                key: value
+                                for key, value in message.items()
+                                if key not in {"type", "layer_id"}
+                            }
+                        )
+                        status = await session.upsert(
+                            device, source_id, layer_id, **_layer_values(body)
+                        )
+                        await websocket.send_json({"type": "updated", **status})
+                    elif action == "remove":
+                        layer_id = _validate_layer_id(message.get("layer_id", ""), "layer_id")
+                        removed, status = await session.remove(source_id, layer_id)
+                        await websocket.send_json({"type": "removed", "removed": removed, **status})
+                    elif action in {"clear", "release"}:
+                        removed, status = await session.clear_source(source_id)
+                        await websocket.send_json(
+                            {"type": "released", "removed": removed, **status}
+                        )
+                        if action == "release":
+                            break
+                    else:
+                        raise ValueError("message type must be set, remove, clear, or release")
+                except (DeviceBusyError, HardwareDeviceBusyError) as exc:
+                    await websocket.send_json({"type": "error", "status": 409, "error": str(exc)})
+                except NotImplementedError as exc:
+                    await websocket.send_json({"type": "error", "status": 501, "error": str(exc)})
+                except (ValueError, TypeError, json.JSONDecodeError, ProtocolError) as exc:
+                    await websocket.send_json({"type": "error", "status": 422, "error": str(exc)})
+                except (X68Error, OSError) as exc:
+                    await websocket.send_json({"type": "error", "status": 503, "error": str(exc)})
+        except WebSocketDisconnect:
+            pass
+        finally:
+            owns_source = False
+            async with layer_socket_lock:
+                if layer_socket_owners.get(source_key) is websocket:
+                    del layer_socket_owners[source_key]
+                    owns_source = True
+            if owns_source:
+                with suppress(Exception):
+                    await session.clear_source(source_id)
 
     @app.websocket("/v1/devices/{device_id}/lighting/stream")
     async def stream(websocket: WebSocket, device_id: str) -> None:
