@@ -65,3 +65,23 @@ def test_extract_ignores_interrupt_hid_input_and_uses_control_payload(monkeypatc
     assert records[0]["bit8_checksum_valid"] is True
     assert records[0]["transfer"] == "control"
     assert "prohibited" not in records[0]
+
+
+def test_summarize_payloads_reports_changing_audio_body_bytes() -> None:
+    analyzer = load_analyzer()
+    reports = []
+    for frame, body in enumerate((bytes(14), bytes([0, 3, 0, 9]) + bytes(10)), start=1):
+        prefix = bytes([0x0D]) + bytes(6)
+        payload = prefix + bytes([analyzer.checksum(prefix, 7)]) + body + bytes(42)
+        reports.append(analyzer.classify(str(frame), str(frame / 10), payload))
+
+    summary = analyzer.summarize_payloads(reports)["0x0D"]
+
+    assert summary["count"] == 2
+    assert summary["unique_payloads"] == 2
+    assert summary["data_bytes_1_to_6_changed_positions"] == []
+    assert summary["data_bytes_1_to_6_nonzero_positions"] == []
+    assert summary["bytes_8_plus_changed_positions"] == [9, 11]
+    assert summary["bytes_8_plus_nonzero_positions"] == [9, 11]
+    assert len(summary["sample_prefixes"]) == 1
+    assert len(summary["sample_bodies_8_to_21"]) == 2

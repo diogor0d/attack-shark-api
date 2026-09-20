@@ -1,6 +1,6 @@
 # X68HE protocol notes
 
-Status date: 2026-09-08
+Status date: 2026-09-20
 
 Evidence labels used below:
 
@@ -154,16 +154,27 @@ A controlled mode-22 capture on 2026-09-08 selected the mode with:
 
 The local helper then emitted 3,909 host-to-device reports over about 80 seconds at
 approximately 49 FPS.
-Every report had this eight-byte prefix and a valid `Bit7` checksum:
+Every report had this eight-byte header and a valid `Bit7` checksum:
 
 ```text
 0D 00 00 00 00 00 00 F2
 ```
 
-The payload stayed zero during silence and during a confirmed five-second, 440 Hz system
-output tone. This establishes opcode `0x0D` and its update cadence, but it does not establish
-the meaning of bytes 1-6 or which audio source the helper samples. No encoder or public API
-is provided until a non-zero controlled capture identifies those fields.
+Re-analysis of the complete 64-byte reports on 2026-09-20 corrected the earlier prefix-only
+interpretation. Bytes 1-6 stayed zero, but bytes 8-21 form a changing 14-byte body. Exactly
+260 consecutive reports had a non-zero body for 5.30 seconds, aligned with the controlled
+five-second 440 Hz system-output tone. Of those, 244 used this body:
+
+```text
+00 00 00 00 00 00 00 00 02 06 06 01 00 00
+```
+
+The other 16 reports form short ramp-up and ramp-down transitions. This proves that the
+helper samples system output and sends a volatile 14-value representation after the
+checksum. The spatial meaning and allowed range of those values remain **CAPTURE NEEDED**.
+The shape is consistent with spectrum levels or column heights, but it is not evidence of
+arbitrary per-key RGB addressing. No encoder or public API is provided until controlled
+frequency captures and observed keyboard output identify the fields.
 
 ## Vendor-driver correlation
 
@@ -175,9 +186,28 @@ helper's `Music2` light type. The X68HE bundle `resources/app/dist/js/e56738b7.j
 mode index `22` and the gen2 speed encoding. The native `resources/app/iot_driver.exe`
 contains WASAPI, microphone, spectrum, `watchSystemInfo`, and `sendRawFeature` strings.
 
-This places audio processing in the native helper rather than the renderer. The captured
-zero payload does not distinguish a render-loopback endpoint from a microphone endpoint, so
-the source remains **CAPTURE NEEDED**. No client-side attempt is made to reproduce it.
+This places audio processing in the native helper rather than the renderer. The corrected
+capture establishes system-output loopback as an active source for mode 22.
+
+### Native-helper command inventory
+
+Static inspection of the installed `iot_driver.exe` on 2026-09-20 found the compiled command
+names and values used by its gen2 HID path:
+
+```text
+FEA_CMD_SET_LEDPARAM = 0x07
+FEA_CMD_SET_USERPIC  = 0x0C
+FEA_CMD_SET_AUDIO    = 0x0D
+FEA_CMD_SET_WINDOS   = 0x0E
+```
+
+The renderer calls the helper's `setLightType` RPC with only `Music2`, `Screen`, or `Other`.
+For the X68HE, the JavaScript device class uses `0x07` to select modes, `0x0C` to upload
+custom per-key pages, and delegates modes 21 and 22 to that helper. Together with the USB
+captures, this is strong evidence that Driver v4 3.1.12 exposes no additional volatile
+per-key lighting command: screen colour uses `0x0E`, music uses `0x0D`, and custom per-key
+data uses flash-backed `0x0C`. This does not prove that an undocumented keyboard-firmware
+command is impossible, but it closes the remaining driver-exposed search path.
 
 ## Blocked command classes
 

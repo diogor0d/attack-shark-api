@@ -7,7 +7,7 @@ import json
 import shutil
 import subprocess
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 PROHIBITED_OPCODES = {
@@ -123,21 +123,82 @@ def extract(capture: Path, device_address: int) -> list[dict[str, object]]:
     return records
 
 
+def summarize_payloads(records: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+    """Summarize payload diversity without retaining raw capture traffic."""
+    grouped: dict[str, list[bytes]] = defaultdict(list)
+    for record in records:
+        opcode = record.get("opcode")
+        payload = record.get("payload")
+        if isinstance(opcode, str) and isinstance(payload, str):
+            grouped[opcode].append(bytes.fromhex(payload))
+
+    summaries: dict[str, dict[str, object]] = {}
+    for opcode, payloads in sorted(grouped.items()):
+        width = max(map(len, payloads), default=0)
+        values_by_position = [
+            {payload[position] for payload in payloads if position < len(payload)}
+            for position in range(width)
+        ]
+        prefixes = Counter(payload[:8].hex() for payload in payloads)
+        bodies = Counter(payload[8:22].hex() for payload in payloads if len(payload) >= 22)
+        summaries[opcode] = {
+            "count": len(payloads),
+            "unique_payloads": len(set(payloads)),
+            "changed_byte_positions": [
+                position for position, values in enumerate(values_by_position) if len(values) > 1
+            ],
+            "nonzero_byte_positions": [
+                position for position, values in enumerate(values_by_position) if any(values)
+            ],
+            "data_bytes_1_to_6_changed_positions": [
+                position
+                for position in range(1, min(7, width))
+                if len(values_by_position[position]) > 1
+            ],
+            "data_bytes_1_to_6_nonzero_positions": [
+                position
+                for position in range(1, min(7, width))
+                if any(values_by_position[position])
+            ],
+            "bytes_8_plus_changed_positions": [
+                position for position in range(8, width) if len(values_by_position[position]) > 1
+            ],
+            "bytes_8_plus_nonzero_positions": [
+                position for position in range(8, width) if any(values_by_position[position])
+            ],
+            "sample_prefixes": [
+                {"prefix": prefix, "count": count} for prefix, count in prefixes.most_common(8)
+            ],
+            "sample_bodies_8_to_21": [
+                {"body": body, "count": count} for body, count in bodies.most_common(8)
+            ],
+        }
+    return summaries
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
     parser.add_argument("--device-address", type=int, required=True)
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="omit individual reports and print only aggregate payload evidence",
+    )
     args = parser.parse_args()
     if not args.capture.is_file():
         parser.error(f"capture does not exist: {args.capture}")
     records = extract(args.capture, args.device_address)
     counts = Counter(record["opcode"] for record in records)
     prohibited = [record for record in records if "prohibited" in record]
-    json.dump(
-        {"records": records, "opcode_counts": counts, "prohibited_records": prohibited},
-        sys.stdout,
-        indent=2,
-    )
+    result = {
+        "opcode_counts": counts,
+        "payload_summaries": summarize_payloads(records),
+        "prohibited_records": prohibited,
+    }
+    if not args.summary_only:
+        result["records"] = records
+    json.dump(result, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 2 if prohibited else 0
 

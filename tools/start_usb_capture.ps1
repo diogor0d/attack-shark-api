@@ -12,6 +12,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'USBPcap capture requires an Administrator PowerShell session.'
+}
+
 $usbPcap = 'C:\Program Files\USBPcap\USBPcapCMD.exe'
 if (-not (Test-Path -LiteralPath $usbPcap -PathType Leaf)) {
     throw "USBPcapCMD was not found at $usbPcap"

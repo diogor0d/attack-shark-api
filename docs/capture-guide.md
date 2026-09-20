@@ -82,6 +82,34 @@ Run:
   --device-address 4
 ```
 
+For high-rate host-driven captures, request an aggregate view so raw report records are not
+printed to the terminal:
+
+```powershell
+.\.venv\Scripts\python.exe tools\analyze_capture.py `
+  "$env:LOCALAPPDATA\AttackSharkX68HE\captures\mode22-microphone-20260920.pcap" `
+  --device-address 1 `
+  --summary-only
+```
+
+The remaining controlled experiment is mode 22 with a sequence of fixed system-output
+frequencies separated by silence. The existing 440 Hz capture proves that bytes 8-21 carry
+a volatile 14-value body while bytes 1-6 remain zero. New captures should establish which
+body positions respond to frequency and amplitude, then correlate those values with the
+physical keyboard. Even if these are spectrum bands or column heights, that would not prove
+arbitrary per-key RGB addressing. Recheck the USB address immediately before capture; the
+`1` above is only an example and is not persistent.
+
+After capture is running and Music Sync is selected in Attack Shark Driver, play the
+deterministic 33-second sequence:
+
+```powershell
+.\.venv\Scripts\python.exe tools\play_frequency_sequence.py
+```
+
+The command prints the exact tone timeline before playback so frequency transitions can be
+correlated with report timestamps.
+
 The analyzer asks TShark for control-transfer payloads belonging to only the selected USB
 device address, summarizes opcodes, checks known checksum positions, and flags prohibited
 opcodes. Review its JSON output before creating a sanitized fixture containing only the

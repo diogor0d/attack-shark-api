@@ -79,8 +79,9 @@ checkpoint:
 
 - mode 21 streams one volatile RGB colour for the whole keyboard with opcode `0x0E`;
 - Light Edit uploads a 126-slot per-key matrix with flash-backed opcode `0x0C`;
-- mode 22 emits opcode `0x0D` at about 49 FPS, but the captured payload remained zero during
-  a system-output test tone, so its signal fields and audio source are not yet established.
+- mode 22 emits opcode `0x0D` at about 49 FPS; a system-output tone changes a volatile
+  14-value body in bytes 8-21, consistent with spectrum levels or column heights, but its
+  physical mapping is not yet established.
 
 `/v1/devices/x68he/lighting/global-stream` accepts exactly one RGB triplet per binary or
 JSON frame, retains only the newest queued frame, and restores the exact captured lighting
